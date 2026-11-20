@@ -6,7 +6,7 @@
 > 局域网访问、自动续期——以实测协议复刻实现了，详见 `docker/DEB_ANALYSIS.txt`）。
 >
 > 结论先行：**NAS 部署完全自给自足**——
-> - 首次登录在管理台完成（新窗口打开官方登录页 → 复制回执网址 → 读取剪贴板/粘贴），不需要 PC 在场；
+> - 首次登录在管理台完成（新窗口走 OAuth 直链 → 复制回执网址 → 粘贴即登录），不需要 PC 在场；
 > - 登录后每天自动续期（复刻官方 `token-refresh` 协议），7 天 token 永不过期；
 > - 唯一的硬限制：**会话有 ~90 天绝对期限**（官方协议 `40116 session_absolute_expired`），
 >   届时在管理台重新登录一次即可，仍是全自动的日常运行。
@@ -77,25 +77,33 @@ data/TeleAgent/                       ← 挂载为容器 /data/TeleAgent
    日志会出现「尚未登录：内核暂不启动。请打开管理台完成登录」——这是预期状态。
 2. 局域网浏览器打开 `http://NAS_IP:8787/admin?token=<TA_ADMIN_TOKEN>`，
    顶部出现「登录态与自动续期」面板。
-3. 点「打开官方登录页」：在**新窗口**打开官方登录页（地址已内置，无需任何配置；
-   与桌面端 iframe 的是同一个页面，支持短信验证码）。
+3. 点「打开登录入口」：在**新窗口**打开桌面端同款授权链（地址已内置，无需配置）：
+   `https://agent.teleai.com.cn/superCowork/sapi/cowork/auth?source=01`
+   → 302 到天翼AI统一登录页 `www.teleai.com.cn/master-auth`（支持短信验证码）
+   → 授权后带 `code` 回到 `.../cowork/auth` 换 token。
    用新窗口而非内嵌 iframe，是因为浏览器默认阻止第三方 Cookie，内嵌登录拿不到会话。
-4. 登录完成后，该窗口地址栏会变成**回执页**：
+4. 授权完成后，该窗口地址栏会变成**回执页**：
    `https://agent.teleai.com.cn/superCowork/sapi/cowork/auth?code=…&token=…`。
-   复制整个网址，回到管理台点「读取剪贴板并登录」（或粘贴到输入框提交）。
+   复制整个网址，回到管理台在输入框按 **Ctrl+V**（粘贴即自动提交）。
    凭据当场写入、内核自动拉起，`generation` 加一。
 5. 若还要自动续期，接着导入平台 Cookie 对（`operToken` / `operationToken`，见 2.3 节）——
    回执网址只带 access token，续期还必须靠这对 Cookie 定位换发会话。
 
-> 登录页地址已内置 `https://agent.teleai.com.cn/meter/teleagent-login/login`，
-> 只有官方换域名时才需要用 `TA_LOGIN_PAGE_URL` 覆盖。
+> ⚠ **不要用 `https://agent.teleai.com.cn/meter/teleagent-login/login`**（网页版登录壳）。
+> 实测：在那里登录后浏览器直接进入 `https://agent.teleai.com.cn/teleagent`（网页版界面），
+> 地址栏**不会**出现 token，抓不到凭据。必须走带 `source=01` 的 OAuth 直链。
+> 若打开 OAuth 直链后仍停在 `/teleagent`，说明浏览器里已有网页版会话被复用——
+> 换无痕窗口重试，或先在该站退出登录。
+>
+> 登录入口地址已内置，只有官方换域名时才需要用 `TA_LOGIN_PAGE_URL` 覆盖。
 >
 > **为什么最后一步要复制一次网址**：token 由官方签发给 `agent.teleai.com.cn` 域，
 > 而反代跑在 `127.0.0.1` 或 NAS 局域网地址上，浏览器同源策略不允许跨域读取；
 > 官方把 token 放在回执页的地址栏 query 里，只能由浏览器带出来一次。
-> 实测过上游 OAuth 链：`/superCowork/sapi/cowork/auth?source=01` 会 302 到
-> teleai 账号授权页，`redirect_uri` 由服务端写死（`…/cowork/auth?appVersion=`），
-> 不接受任何自定义回跳参数——所以不存在「登录完自动写进反代」的通道。
+> 实测 OAuth 链：`/superCowork/sapi/cowork/auth?source=01` → 302 →
+> `www.teleai.com.cn/master-auth?redirect_uri=https%3A%2F%2Fagent.teleai.com.cn%2FsuperCowork%2Fsapi%2Fcowork%2Fauth%3FappVersion%3D&client_id=…`，
+> `redirect_uri` 由服务端写死，传 `redirect_url` / `redirectUri` / `state` 均不回显——
+> 所以不存在「登录完自动写进反代」的通道。
 
 ### 2.3 自动续期（登录一次后的日常运行）
 
@@ -459,7 +467,7 @@ environment:
 1. 管理台 →「登录态与自动续期」→「退出登录」；
 2. 凭据清空、内核停机，状态变 `hasToken:false`、`needLogin` 有提示；
    此时业务端点返回 `401 {"code":"need_login","message":"尚未登录：请在管理台 /admin …"}`；
-3. 点「打开官方登录页」走完整登录（回执网址可读取剪贴板或粘贴），成功后 `generation + 1`、内核自动拉起。
+3. 点「打开登录入口」走完整登录（回执网址粘贴即提交），成功后 `generation + 1`、内核自动拉起。
 
 `POST /admin/api/auth/logout` 即同一动作，脚本化测试用。
 「退出登录」只清 token，**保留** `operToken/operationToken` 这对 Cookie（换 token 后仍可复用）。

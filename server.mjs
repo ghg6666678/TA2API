@@ -46,9 +46,16 @@ if (missing.length > fatalMissing.length) {
 const owner = resolveOwner();
 const runtimeRoot = path.join(here, 'runtime');
 
-// 官方 Web 登录页（TeleAgent 账号中心）。管理台 iframe 直接加载它，
-// 登录成功后的回跳网址由 postMessage 或用户粘贴交回；TA_LOGIN_PAGE_URL 可覆盖。
-const DEFAULT_LOGIN_PAGE_URL = 'https://agent.teleai.com.cn/meter/teleagent-login/login';
+// 登录入口 = 桌面端同款 OAuth 直链（不是网页版登录壳）。
+//   /meter/teleagent-login/login 是「网页版」登录壳，登录完进 https://agent.teleai.com.cn/teleagent，
+//   地址栏不会出现 token —— 拿不到凭据。
+//   带 source=01（FA.DESKTOP）才是桌面端链路：
+//     .../cowork/auth?source=01 → 302 teleai 统一登录 → 授权后带 code 回
+//     .../cowork/auth?appVersion=&code=… → 换 token → 回执页 .../cowork/auth?code=…&token=…
+//   桌面版正是从该回执 URL 里取 token（LoginWindow 的 did-navigate 判定 pathname 以 /cowork/auth 结尾）。
+// TA_LOGIN_PAGE_URL 可覆盖（官方改域名时用）。
+const DEFAULT_LOGIN_PAGE_URL =
+  'https://agent.teleai.com.cn/superCowork/sapi/cowork/auth?source=01';
 
 // 部署模式（2026-11-21 用户决策）：
 //   gui-companion —— PC 上桌面版与反代共存：桌面版独占 token 换发（双客户端都换发会

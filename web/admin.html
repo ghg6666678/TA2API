@@ -521,12 +521,16 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   <div class="modal wide">
     <h3>登录 TeleAgent 账号</h3>
     <ol class="desc" style="padding-left:20px; margin:0 0 10px;">
-      <li>点<b>打开官方登录页</b>（新窗口，支持短信验证码）。</li>
-      <li>登录完成后，该窗口地址栏会变成以 <code>/superCowork/sapi/cowork/auth</code> 开头、带 <code>token=</code> 的网址。</li>
-      <li>复制整个网址，回到本页点<b>读取剪贴板并登录</b>——凭据自动写入并拉起内核。</li>
+      <li>点<b>打开登录入口</b>（新窗口，走桌面端同款授权链，支持短信验证码）。</li>
+      <li>登录授权后，该窗口地址栏会变成以 <code>/superCowork/sapi/cowork/auth</code> 开头、带 <code>token=</code> 的网址。</li>
+      <li>复制整个网址，回到本页在下方输入框按 <b>Ctrl+V</b>——粘贴即自动登录。</li>
     </ol>
+    <p class="desc" style="color:#c58b00; font-size:12px; margin:0 0 10px;">
+      若登录后停在了 <code>agent.teleai.com.cn/teleagent</code>（网页版界面），说明浏览器里已有网页版会话被直接复用，
+      地址栏不会出现 token。换一个无痕窗口重试，或先在该站退出登录再走一次。
+    </p>
     <div class="actions" style="margin-bottom:4px;">
-      <button class="btn primary" id="openLoginWin">打开官方登录页</button>
+      <button class="btn primary" id="openLoginWin">打开登录入口</button>
       <button class="btn" id="clipBtn">读取剪贴板并登录</button>
       <button class="btn" id="loginClose">关闭</button>
     </div>
@@ -1074,8 +1078,9 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 /* ---------- 登录态 / 自动续期（NAS 自给自足通道，独立于上方主逻辑） ---------- */
 (function () {
   var authVisible = false;
-  // 官方登录页：服务端 /admin/api/auth 会下发（可被 TA_LOGIN_PAGE_URL 覆盖），此处仅兜底
-  var loginPageUrl = 'https://agent.teleai.com.cn/meter/teleagent-login/login';
+  // 登录入口：桌面端同款 OAuth 直链（source=01）。网页版登录壳
+  // /meter/teleagent-login/login 登录完进 /teleagent，地址栏没有 token，抓不到凭据。
+  var loginPageUrl = 'https://agent.teleai.com.cn/superCowork/sapi/cowork/auth?source=01';
   var $a = function (id) { return document.getElementById(id); };
   var token = localStorage.getItem('ta_admin_token') || '';
   var esc = function (s) {
