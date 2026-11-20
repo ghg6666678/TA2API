@@ -10,7 +10,7 @@ local.secrets.json
 docker/.env
 docker/gateway_key.txt
 docker/data/
-docker/ta-export/
+docker/ta-export*/
 docker/payload/TeleAgent-linux-*
 
 # 逆向抓下来的客户端片段（不随仓库分发）
