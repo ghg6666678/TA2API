@@ -300,7 +300,7 @@
         <h2>登录态与自动续期</h2>
         <div style="display:flex; gap:8px;">
           <button class="btn" id="authRenewBtn">手动续期</button>
-          <button class="btn primary" id="authLoginBtn">打开登录页</button>
+          <button class="btn primary" id="authLoginBtn">登录账号</button>
           <button class="btn" id="authLogoutBtn" title="清空凭据并停机，回到待登录态（用于验证登录流程/换账号）">退出登录</button>
         </div>
       </div>
@@ -520,35 +520,21 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 <div class="backdrop" id="mLogin">
   <div class="modal wide">
     <h3>登录 TeleAgent 账号</h3>
-    <p class="desc">在下方的官方登录页完成登录（支持短信验证码）。登录成功后本页会自动捕获回跳并写入凭据；
-       若未自动完成，可复制登录结束后浏览器地址栏的完整网址粘贴到下方提交。</p>
-    <div style="border:1px solid rgba(255,255,255,.14); border-radius:10px; overflow:hidden; height:440px; background:#fff;">
-      <iframe id="loginFrame" style="width:100%; height:100%; border:0;" src="about:blank" referrerpolicy="no-referrer"></iframe>
-    </div>
-    <div class="formrow" style="margin-top:10px;">
-      <input class="input" id="pasteUrl" type="text" placeholder="备用：粘贴含 /cowork/auth?...token=... 的完整回跳网址" />
-      <button class="btn" id="pasteSubmit">提交</button>
-    </div>
-    <div class="actions">
+    <ol class="desc" style="padding-left:20px; margin:0 0 10px;">
+      <li>点<b>打开官方登录页</b>（新窗口，支持短信验证码）。</li>
+      <li>登录完成后，该窗口地址栏会变成以 <code>/superCowork/sapi/cowork/auth</code> 开头、带 <code>token=</code> 的网址。</li>
+      <li>复制整个网址，回到本页点<b>读取剪贴板并登录</b>——凭据自动写入并拉起内核。</li>
+    </ol>
+    <div class="actions" style="margin-bottom:4px;">
+      <button class="btn primary" id="openLoginWin">打开官方登录页</button>
+      <button class="btn" id="clipBtn">读取剪贴板并登录</button>
       <button class="btn" id="loginClose">关闭</button>
     </div>
-  </div>
-</div>
-
-<div class="backdrop" id="mLogin">
-  <div class="modal wide">
-    <h3>登录 TeleAgent 账号</h3>
-    <p class="desc">在下方的官方登录页完成登录（支持短信验证码）。登录成功后本页会自动捕获回跳并写入凭据；
-       若未自动完成，可复制登录结束后浏览器地址栏的完整网址粘贴到下方提交。</p>
-    <div style="border:1px solid rgba(255,255,255,.14); border-radius:10px; overflow:hidden; height:440px; background:#fff;">
-      <iframe id="loginFrame" style="width:100%; height:100%; border:0;" src="about:blank" referrerpolicy="no-referrer"></iframe>
-    </div>
-    <div class="formrow" style="margin-top:10px;">
-      <input class="input" id="pasteUrl" type="text" placeholder="备用：粘贴登录回跳的完整网址（应包含 code/token 参数）" />
+    <hr style="border:0; border-top:1px solid rgba(255,255,255,.12); margin:16px 0;" />
+    <p class="desc">也可以直接粘贴：</p>
+    <div class="formrow" style="margin-top:8px;">
+      <input class="input" id="pasteUrl" type="text" placeholder="https://.../superCowork/sapi/cowork/auth?code=...&token=..." />
       <button class="btn" id="pasteSubmit">提交</button>
-    </div>
-    <div class="actions">
-      <button class="btn" id="loginClose">关闭</button>
     </div>
   </div>
 </div>
@@ -1088,7 +1074,8 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 /* ---------- 登录态 / 自动续期（NAS 自给自足通道，独立于上方主逻辑） ---------- */
 (function () {
   var authVisible = false;
-  var loginPageUrl = ''; // 由服务端 /admin/api/auth 下发，页面里不写死
+  // 官方登录页：服务端 /admin/api/auth 会下发（可被 TA_LOGIN_PAGE_URL 覆盖），此处仅兜底
+  var loginPageUrl = 'https://agent.teleai.com.cn/meter/teleagent-login/login';
   var $a = function (id) { return document.getElementById(id); };
   var token = localStorage.getItem('ta_admin_token') || '';
   var esc = function (s) {
@@ -1143,7 +1130,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
       : '';
     var banner = $a('authBanner');
     if (st.needLogin) {
-      banner.textContent = '⚠ ' + st.needLogin + '：点「打开登录页」完成一次登录即可恢复';
+      banner.textContent = '⚠ ' + st.needLogin + '：点「登录账号」完成一次登录即可恢复';
       banner.style.display = '';
     } else if (st.absoluteExpiresAt && st.absoluteExpiresAt - Date.now() < 7 * 86400000 && !guiMode) {
       banner.textContent = '⚠ 会话将在 ' + fmtTs(st.absoluteExpiresAt) + ' 前后到期（会话绝对期限），届时需重新登录';
@@ -1209,7 +1196,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
       $a('authLogoutBtn').disabled = false;
       if (r.status === 200 && r.data && r.data.ok) {
         var b = $a('authBanner');
-        b.textContent = 'ℹ 已退出登录：凭据已清空，内核已停机。请用「打开登录页」或粘贴回跳网址重新登录。';
+        b.textContent = 'ℹ 已退出登录：凭据已清空，内核已停机。请用「登录账号」重新登录。';
         b.style.display = '';
         loadAuth();
       } else {
@@ -1223,31 +1210,88 @@ curl http://127.0.0.1:8787/v1/chat/completions \
       if (r.status === 200 && r.data && r.data.ok) {
         $a('pasteUrl').value = '';
         $a('mLogin').classList.remove('show');
-        $a('loginFrame').src = 'about:blank';
         loadAuth();
       } else {
         window.alert((r.data && r.data.error) || '提交失败');
       }
     });
   }
+  // 登录入口必须与桌面端一致：直接开官方登录页，不附加任何参数。
+  // 官方登录壳在无 source 参数时按桌面模式走：/superCowork/sapi/cowork/auth -> teleai 授权
+  // -> 回执页 .../auth?code=…&token=…（token 只出现在回执页地址栏，不经过 redirect_url）。
+  function buildLoginUrl() {
+    return loginPageUrl;
+  }
   $a('authLoginBtn').addEventListener('click', function () {
-    if (!loginPageUrl) {
-      window.alert('服务端未配置 TA_LOGIN_PAGE_URL（官方登录页地址，见部署指南）。\n当前仍可用备用通道：在任意浏览器完成登录后，把地址栏完整网址粘贴到本窗口的输入框提交。');
-      return;
-    }
-    $a('loginFrame').src = loginPageUrl;
     $a('mLogin').classList.add('show');
     loadAuth();
   });
+  $a('openLoginWin').addEventListener('click', function () {
+    var w = window.open(buildLoginUrl(), 'ta_login', 'width=520,height=720');
+    if (!w) window.alert('浏览器拦截了弹窗，请允许本站弹窗后重试。');
+    else loginWinOpened = true;
+  });
   $a('loginClose').addEventListener('click', function () {
     $a('mLogin').classList.remove('show');
-    $a('loginFrame').src = 'about:blank';
   });
   $a('pasteSubmit').addEventListener('click', function () { submitUrl($a('pasteUrl').value.trim()); });
-  // 官方登录页在登录完成后向父窗口 postMessage {type:'loginRedirect', url}（与官方 Web 登录壳同机制）
+
+  // http://NAS_IP 属于非安全上下文，navigator.clipboard 不可用；
+  // 所以主通道是「粘贴即提交」——Ctrl+V 一下就不用再点按钮。
+  $a('pasteUrl').addEventListener('paste', function (ev) {
+    var t = (ev.clipboardData || window.clipboardData);
+    if (!t) return;
+    var s = String(t.getData('text') || '').trim();
+    if (!s) return;
+    ev.preventDefault();
+    $a('pasteUrl').value = s;
+    if (looksLikeReceipt(s)) submitUrl(s);
+  });
+
+  // 回执网址形如 https://agent.teleai.com.cn/superCowork/sapi/cowork/auth?code=…&token=…
+  var lastClipSubmitted = '';
+  function looksLikeReceipt(text) {
+    return typeof text === 'string' && text.indexOf('/cowork/auth') !== -1 && text.indexOf('token=') !== -1;
+  }
+  function submitFromClipboard(silent) {
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      if (!silent) {
+        window.alert(
+          '当前页面不是安全上下文（http:// 访问非 localhost 时浏览器禁用剪贴板读取）。\n' +
+          '请在下方输入框里按 Ctrl+V 粘贴，粘贴后会自动提交。'
+        );
+      }
+      return;
+    }
+    navigator.clipboard.readText().then(function (t) {
+      var s = String(t || '').trim();
+      if (!looksLikeReceipt(s)) {
+        if (!silent) window.alert('剪贴板里没找到登录回执网址（应含 /cowork/auth 与 token=）。请先在新窗口复制地址栏网址。');
+        return;
+      }
+      if (s === lastClipSubmitted) return;
+      lastClipSubmitted = s;
+      submitUrl(s);
+    }).catch(function () {
+      if (!silent) window.alert('浏览器拒绝了剪贴板访问，请手动粘贴到下方输入框。');
+    });
+  }
+  $a('clipBtn').addEventListener('click', function () { submitFromClipboard(false); });
+
+  // 从登录窗口切回本页时，顺手试一次（多数浏览器要求用户手势才会授权，失败就静默）
+  var loginWinOpened = false;
+  window.addEventListener('focus', function () {
+    if (!loginWinOpened) return;
+    if (!$a('mLogin').classList.contains('show')) return;
+    submitFromClipboard(true);
+  });
   window.addEventListener('message', function (ev) {
     var d = ev.data;
-    if (!d || d.type !== 'loginRedirect' || typeof d.url !== 'string') return;
+    if (!d) return;
+    // 回调页写入成功后通知本页立即刷新状态
+    if (d.type === 'ta-login-done') { loadAuth(); return; }
+    // 兼容：若官方页面主动向父窗口回传回跳网址
+    if (d.type !== 'loginRedirect' || typeof d.url !== 'string') return;
     submitUrl(d.url);
   });
   loadAuth();

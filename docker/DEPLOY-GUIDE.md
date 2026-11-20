@@ -6,7 +6,7 @@
 > 局域网访问、自动续期——以实测协议复刻实现了，详见 `docker/DEB_ANALYSIS.txt`）。
 >
 > 结论先行：**NAS 部署完全自给自足**——
-> - 首次登录在管理台完成（官方登录页 iframe 或粘贴回跳网址），不需要 PC 在场；
+> - 首次登录在管理台完成（新窗口打开官方登录页 → 复制回执网址 → 读取剪贴板/粘贴），不需要 PC 在场；
 > - 登录后每天自动续期（复刻官方 `token-refresh` 协议），7 天 token 永不过期；
 > - 唯一的硬限制：**会话有 ~90 天绝对期限**（官方协议 `40116 session_absolute_expired`），
 >   届时在管理台重新登录一次即可，仍是全自动的日常运行。
@@ -77,18 +77,25 @@ data/TeleAgent/                       ← 挂载为容器 /data/TeleAgent
    日志会出现「尚未登录：内核暂不启动。请打开管理台完成登录」——这是预期状态。
 2. 局域网浏览器打开 `http://NAS_IP:8787/admin?token=<TA_ADMIN_TOKEN>`，
    顶部出现「登录态与自动续期」面板。
-3. 点「打开登录页」：弹窗内嵌**官方登录页**（桌面端与官方 Web 登录壳内嵌的是同一个页面，
-   支持短信验证码），登录完成后官方页面向父窗口 `postMessage {type:'loginRedirect', url}`，
-   管理台自动捕获、提取 token、写入凭据库并拉起内核——全自动。
-4. 若 iframe 通道被浏览器策略干扰，用备用通道：在**任意设备**的浏览器里直接打开官方登录页
-   完成登录，登录结束后把浏览器地址栏的**完整回跳网址**（路径含 `/cowork/auth`、参数含
-   `token=`）粘贴进管理台弹窗底部的输入框提交。两条通道走同一个后端接口。
+3. 点「打开官方登录页」：在**新窗口**打开官方登录页（地址已内置，无需任何配置；
+   与桌面端 iframe 的是同一个页面，支持短信验证码）。
+   用新窗口而非内嵌 iframe，是因为浏览器默认阻止第三方 Cookie，内嵌登录拿不到会话。
+4. 登录完成后，该窗口地址栏会变成**回执页**：
+   `https://agent.teleai.com.cn/superCowork/sapi/cowork/auth?code=…&token=…`。
+   复制整个网址，回到管理台点「读取剪贴板并登录」（或粘贴到输入框提交）。
+   凭据当场写入、内核自动拉起，`generation` 加一。
+5. 若还要自动续期，接着导入平台 Cookie 对（`operToken` / `operationToken`，见 2.3 节）——
+   回执网址只带 access token，续期还必须靠这对 Cookie 定位换发会话。
 
-> 官方登录页地址通过环境变量 `TA_LOGIN_PAGE_URL` 配置（见 `.env.example` 与第 5 节）；
-> 不配置时 iframe 按钮会提示改用粘贴通道，功能不受影响。
-> 回跳网址形如：网关域名 `/superCowork/sapi/cowork/auth?code=…&token=…`——
-> 与桌面端 LoginWindow 的 `did-navigate` 判定条件完全一致（代码逆向依据，
-> 见 `reverse/teleagent-kernel/asar-extract/`）。
+> 登录页地址已内置 `https://agent.teleai.com.cn/meter/teleagent-login/login`，
+> 只有官方换域名时才需要用 `TA_LOGIN_PAGE_URL` 覆盖。
+>
+> **为什么最后一步要复制一次网址**：token 由官方签发给 `agent.teleai.com.cn` 域，
+> 而反代跑在 `127.0.0.1` 或 NAS 局域网地址上，浏览器同源策略不允许跨域读取；
+> 官方把 token 放在回执页的地址栏 query 里，只能由浏览器带出来一次。
+> 实测过上游 OAuth 链：`/superCowork/sapi/cowork/auth?source=01` 会 302 到
+> teleai 账号授权页，`redirect_uri` 由服务端写死（`…/cowork/auth?appVersion=`），
+> 不接受任何自定义回跳参数——所以不存在「登录完自动写进反代」的通道。
 
 ### 2.3 自动续期（登录一次后的日常运行）
 
@@ -217,7 +224,7 @@ Dockerfile 只 `COPY` 与构建架构同名的那一个文件。
 
   漏挂第二个卷的话，登录态和密钥表在容器重建后全部丢失。
 - `.env`（由 `.env.example` 复制）：`TA_API_KEY`、`TA_ADMIN_TOKEN` 必填；
-  `TA_LOGIN_PAGE_URL` 建议填官方登录页地址；`TA_WATCHDOG_MS` / `TA_RENEW_INTERVAL_MS`
+  `TA_LOGIN_PAGE_URL` 已内置默认值、平时留空；`TA_WATCHDOG_MS` / `TA_RENEW_INTERVAL_MS`
   默认已按 7×24 设好。
 
 ---
@@ -322,8 +329,10 @@ curl -s http://NAS_IP:8787/admin/api/auth -H "x-admin-token: $TA_ADMIN_TOKEN"
 - **真实网关的 token-refresh 调用**（协议与官方客户端逐字节一致，但按风控纪律，
   未经明确同意不向生产网关发测试请求——首次部署登录后的第一次自动续期即真实验证）。
   本次容器实测刻意设 `TA_RENEW_INTERVAL_MS=0`，避免与同机桌面版抢同一换发会话（40115）。
-- 登录页 iframe 的 `postMessage` 回传通道（依据官方 Web 登录壳同机制推断 + 桌面端
-  注入脚本逆向；备用「粘贴回跳网址」通道不依赖它）。
+- ~~登录页 iframe 的 `postMessage` 回传通道~~ —— 已证伪：官方登录页登录成功后执行
+  `location.assign(redirect_url)`，且 `redirect_url` 只在 WEB 模式生效；桌面模式走
+  `/superCowork/sapi/cowork/auth?source=01` → teleai 授权 → 回执页（地址栏带 token）。
+  故改为「新窗口登录 + 读取剪贴板/粘贴回执网址」，见 2.2 节。
 - `ghcr.io/ghg6666678/ta2api` 镜像是否存在（gh 无 `read:packages` scope）；
   本文走本地构建，不依赖 GHCR。
 - ARM64 容器实跑（本机为 x86_64；arm64 内核只做了 ELF 头鉴定与 sha256 核对）。
@@ -450,7 +459,7 @@ environment:
 1. 管理台 →「登录态与自动续期」→「退出登录」；
 2. 凭据清空、内核停机，状态变 `hasToken:false`、`needLogin` 有提示；
    此时业务端点返回 `401 {"code":"need_login","message":"尚未登录：请在管理台 /admin …"}`；
-3. 点「打开登录页」走完整登录（或粘贴回跳网址），成功后 `generation + 1`、内核自动拉起。
+3. 点「打开官方登录页」走完整登录（回执网址可读取剪贴板或粘贴），成功后 `generation + 1`、内核自动拉起。
 
 `POST /admin/api/auth/logout` 即同一动作，脚本化测试用。
 「退出登录」只清 token，**保留** `operToken/operationToken` 这对 Cookie（换 token 后仍可复用）。

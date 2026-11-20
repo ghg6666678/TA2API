@@ -46,6 +46,10 @@ if (missing.length > fatalMissing.length) {
 const owner = resolveOwner();
 const runtimeRoot = path.join(here, 'runtime');
 
+// 官方 Web 登录页（TeleAgent 账号中心）。管理台 iframe 直接加载它，
+// 登录成功后的回跳网址由 postMessage 或用户粘贴交回；TA_LOGIN_PAGE_URL 可覆盖。
+const DEFAULT_LOGIN_PAGE_URL = 'https://agent.teleai.com.cn/meter/teleagent-login/login';
+
 // 部署模式（2026-11-21 用户决策）：
 //   gui-companion —— PC 上桌面版与反代共存：桌面版独占 token 换发（双客户端都换发会
 //     互相挤掉会话 → 40115 session_not_found，实测），反代 token 以桌面版 token.json
@@ -250,7 +254,7 @@ async function getKernel({ key, prompt }) {
   // 未登录（刚启动 / 管理台退出登录后）时别去起一个没有凭据的内核——
   // 那样只会拿上游的 40108 invalid token 当答案，看不出真正原因。
   if (!authState.token) {
-    const err = new Error('尚未登录：请在管理台 /admin 用「打开登录页」或粘贴回跳网址完成一次登录');
+    const err = new Error('尚未登录：请在管理台 /admin 点「登录账号」完成一次登录');
     err.status = 401;
     err.code = 'need_login';
     throw err;
@@ -505,7 +509,7 @@ function handleAdminLogout() {
     source: 'none',
     tokenExpiresAt: null,
     absoluteExpiresAt: null,
-    needLogin: '已退出登录：请用「打开登录页」或粘贴回跳网址重新登录',
+    needLogin: '已退出登录：请用「登录账号」重新登录',
   };
   // 没有 token 时内核无法提供服务，留着只会让请求 401 并被看门狗反复重起
   try {
@@ -571,9 +575,8 @@ const shim = await createShim({
       installId: authState.installId,
       // 换发会话 Cookie 对的存在性（不回显值）：NAS 判断「能否自续期」的关键指标
       platformCookies: cookieStatus(),
-      // 官方登录页地址：环境变量 TA_LOGIN_PAGE_URL 配置（见 docker/DEPLOY-GUIDE.md）。
-      // 未配置时管理台仍可用「粘贴回跳网址」通道完成登录。
-      loginPageUrl: process.env.TA_LOGIN_PAGE_URL || null,
+      // 官方登录页地址：内置默认值，TA_LOGIN_PAGE_URL 可覆盖（官方换域名时无需改代码）。
+      loginPageUrl: process.env.TA_LOGIN_PAGE_URL || DEFAULT_LOGIN_PAGE_URL,
     }),
     login: handleAdminLogin,
     logout: handleAdminLogout,
