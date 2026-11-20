@@ -301,6 +301,7 @@
         <div style="display:flex; gap:8px;">
           <button class="btn" id="authRenewBtn">手动续期</button>
           <button class="btn primary" id="authLoginBtn">打开登录页</button>
+          <button class="btn" id="authLogoutBtn" title="清空凭据并停机，回到待登录态（用于验证登录流程/换账号）">退出登录</button>
         </div>
       </div>
       <p class="desc" id="authSummary">加载中…</p>
@@ -1199,6 +1200,22 @@ curl http://127.0.0.1:8787/v1/chat/completions \
       }
       loadAuth();
     }).catch(function () { $a('authRenewBtn').disabled = false; });
+  });
+  // 退出登录：清空凭据 → 停机 → 回到待登录态。二次确认，避免误点把在跑的会话断掉。
+  $a('authLogoutBtn').addEventListener('click', function () {
+    if (!window.confirm('退出登录会清空本机凭据并停掉内核，需要重新登录才能恢复服务。确定继续？')) return;
+    $a('authLogoutBtn').disabled = true;
+    authApi('/admin/api/auth/logout', { method: 'POST' }).then(function (r) {
+      $a('authLogoutBtn').disabled = false;
+      if (r.status === 200 && r.data && r.data.ok) {
+        var b = $a('authBanner');
+        b.textContent = 'ℹ 已退出登录：凭据已清空，内核已停机。请用「打开登录页」或粘贴回跳网址重新登录。';
+        b.style.display = '';
+        loadAuth();
+      } else {
+        window.alert((r.data && r.data.error) || '退出登录失败');
+      }
+    }).catch(function () { $a('authLogoutBtn').disabled = false; });
   });
   function submitUrl(url) {
     if (!url) return;

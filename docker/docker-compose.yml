@@ -15,7 +15,10 @@ services:
       TA_API_KEY: "${TA_API_KEY:?请在 .env 设置 Bearer 密钥}"
       TA_ADMIN_TOKEN: "${TA_ADMIN_TOKEN:?请在 .env 设置管理台令牌}"
       # 局域网打开管理台需要同时开这两个开关（远程访问强制带令牌）
-      TA_ADMIN_ALLOW_REMOTE: "1"
+      TA_ADMIN_ALLOW_REMOTE: "${TA_ADMIN_ALLOW_REMOTE:-1}"
+      # 本机模式：容器内无法区分「宿主的 127.0.0.1」和「局域网另一台机器」（都是网桥网关地址）。
+      # 仅当端口只绑宿主回环（TA_BIND_ADDR=127.0.0.1）时才可设 1，此时管理台免令牌。
+      TA_ADMIN_LOCAL_ONLY: "${TA_ADMIN_LOCAL_ONLY:-0}"
       # 官方登录页地址（NAS 首次登录用，见 DEPLOY-GUIDE.md 第 2 节；不设则用「粘贴回跳网址」通道）
       TA_LOGIN_PAGE_URL: "${TA_LOGIN_PAGE_URL:-}"
       TA_GATEWAY_KEY_FILE: /run/secrets/gateway_key
@@ -29,7 +32,9 @@ services:
     secrets:
       - gateway_key
     ports:
-      - "8787:8787"
+      # PC 本机用 → TA_BIND_ADDR=127.0.0.1（配 TA_ADMIN_LOCAL_ONLY=1，管理台免令牌且不暴露到局域网）
+      # NAS 给别人用 → TA_BIND_ADDR=0.0.0.0（管理台需令牌，见 TA_ADMIN_ALLOW_REMOTE）
+      - "${TA_BIND_ADDR:-0.0.0.0}:8787:8787"
     volumes:
       # 账号配置布局（current-owner.json / .version.json / users/<ownerDir>/…）——不含密钥
       - ./data/TeleAgent:/data/TeleAgent

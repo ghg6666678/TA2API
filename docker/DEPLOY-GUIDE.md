@@ -310,7 +310,10 @@ curl -s http://NAS_IP:8787/admin/api/auth -H "x-admin-token: $TA_ADMIN_TOKEN"
 | Anthropic `POST /v1/messages` | 200，`content[0].type=text`，`stop_reason=end_turn` |
 | 工具中继（OpenAI tools） | 第一轮 `finish_reason=tool_calls`，函数名/参数原样回传；第二轮回灌 `role:tool` 后 `finish_reason=stop`，模型用「26℃ 多云」作答——**闭环成立** |
 | 鉴权 | 业务端点无 key → 401；`/v1/models`、`/healthz` 为公开端点（网关惯例） |
-| 管理台 | `/admin` 55KB 页面正常；`/admin/api/auth` 返回完整状态；无 token / 错 token 均 403（容器内来源非回环，`TA_ADMIN_ALLOW_REMOTE=1` 下强制令牌） |
+| 管理台（本机模式） | 端口绑 `127.0.0.1` + `TA_ADMIN_LOCAL_ONLY=1`：宿主浏览器打开 `127.0.0.1:8787/admin` 直接 200，免令牌；局域网不可达 |
+| 管理台（远程/令牌） | 无令牌 → 403 且返回**令牌输入页**（不再裸 JSON）；错令牌 → 403；正确令牌 → 200 |
+| 退出登录 | `POST /admin/api/auth/logout` → `hasToken:false`、内核停机、Cookie 对保留；业务端点随即返回 `401 need_login`（1.2s 内，不挂起） |
+| 登录通道 | 粘贴回跳网址 → 解析 token → 落库 `generation+1` → 自动拉起内核 → 对话 200（实测 generation 1→3 往返） |
 | 局域网访问 | 宿主 LAN IP 访问 `8787` 正常（`TA_HOST=0.0.0.0` 生效） |
 | 内核自愈 | 容器内 `kill -9` 内核 → **+11s** 自动重启，`/healthz` 端口刷新，随后对话 200 |
 | 持久化 | `data/runtime/` 下 `teleagent.db`、`api-keys.json`、`credentials/`、内核日志均在卷内；容器重启后凭据与 `generation` 不变 |
@@ -406,8 +409,48 @@ docker exec ta2api sh -c 'for d in /proc/[0-9]*; do tr "\0" " " < $d/cmdline; ec
 `data/TeleAgent/` 里必须有 `current-owner.json`（第 2.1 节）。空目录不算——
 入口脚本据此判断「是否已完成账号配置」，避免起一个必然失败的内核。
 
-### 10.5 管理台在本机打不开 / 打开 403
+### 10.5 宿主机浏览器打开 `127.0.0.1:8787/admin` 提示「管理台仅允许本机访问」
 
-容器内看到的来源是 Docker 网关地址，不是回环，因此走「远程」分支：
-必须 `TA_ADMIN_ALLOW_REMOTE=1` **且**带 `?token=<TA_ADMIN_TOKEN>`（compose 已默认开启）。
-只想本机用可直接 `docker exec` 进容器 `curl 127.0.0.1:8787/admin`。
+这是容器带来的假象，不是权限真的坏了。宿主机 → 容器的流量在容器内看是**网桥网关地址**
+（如 `172.17.0.1`），和「局域网另一台机器」完全一样，`isLoopback()` 分辨不出来。
+
+按你的场景选一种：
+
+**A. 这台机器自己用（PC，推荐）** —— 端口只绑宿主回环 + 声明本机模式：
+
+```yaml
+ports: ["127.0.0.1:8787:8787"]          # 或 .env 里 TA_BIND_ADDR=127.0.0.1
+environment:
+  TA_ADMIN_LOCAL_ONLY: "1"              # 端口没暴露到局域网 → 免令牌
+```
+
+`http://127.0.0.1:8787/admin` 直接进，不再问令牌，局域网也连不上这个端口。
+
+**B. NAS，给别人从别的设备用** —— 必须暴露端口 + 令牌：
+
+```yaml
+ports: ["0.0.0.0:8787:8787"]
+environment:
+  TA_ADMIN_ALLOW_REMOTE: "1"
+  TA_ADMIN_TOKEN: "换成足够长的随机串"
+  TA_ADMIN_LOCAL_ONLY: "0"              # 关键：0.0.0.0 时绝不能设 1
+```
+
+从笔记本访问 `http://<NAS-IP>:8787/admin` 会看到一个**令牌输入页**（不是裸 JSON 报错），
+粘贴 `TA_ADMIN_TOKEN` 即可进入；之后的请求用 `?token=` 或 `x-admin-token`，
+撤销就是换一个 token 再重启。
+
+> 两个开关是**互锁**的：`TA_ADMIN_LOCAL_ONLY=1` 但端口绑 `0.0.0.0`，
+> 等于把管理台无鉴权地送到局域网——部署指南把这条写在 `.env.example` 里，别踩。
+
+### 10.6 想验证「登录功能」本身，别用导出的凭据
+
+可以用管理台的 **「退出登录」** 按钮构造出真正的未登录态（不用手工删文件）：
+
+1. 管理台 →「登录态与自动续期」→「退出登录」；
+2. 凭据清空、内核停机，状态变 `hasToken:false`、`needLogin` 有提示；
+   此时业务端点返回 `401 {"code":"need_login","message":"尚未登录：请在管理台 /admin …"}`；
+3. 点「打开登录页」走完整登录（或粘贴回跳网址），成功后 `generation + 1`、内核自动拉起。
+
+`POST /admin/api/auth/logout` 即同一动作，脚本化测试用。
+「退出登录」只清 token，**保留** `operToken/operationToken` 这对 Cookie（换 token 后仍可复用）。

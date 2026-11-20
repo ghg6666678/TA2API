@@ -247,6 +247,14 @@ function forceRestartKernel(reason) {
 
 async function getKernel({ key, prompt }) {
   lastAsk = { key, prompt };
+  // 未登录（刚启动 / 管理台退出登录后）时别去起一个没有凭据的内核——
+  // 那样只会拿上游的 40108 invalid token 当答案，看不出真正原因。
+  if (!authState.token) {
+    const err = new Error('尚未登录：请在管理台 /admin 用「打开登录页」或粘贴回跳网址完成一次登录');
+    err.status = 401;
+    err.code = 'need_login';
+    throw err;
+  }
   if (key === kernelKey && !kernelDead()) return kernel;
   if (bridge.hasCalls()) return kernel; // 工具循环进行中，先不换，避免打断挂起调用
   const reason = kernelDead()
@@ -473,6 +481,44 @@ async function handleAdminLogin(rawUrl) {
   };
 }
 
+/**
+ * 管理台退出登录：清空 token（保留 Cookie 对），停掉内核，回到「待登录」态。
+ *
+ * 用途：① 验证登录流程是否真能走通（不必先手工删文件）；② 换账号；
+ * ③ 凭据异常时重置到干净状态。Cookie 对保留是因为它属于浏览器会话，
+ * 换 token 时仍可复用（重新登录后若失效，再导入一次即可）。
+ */
+function handleAdminLogout() {
+  const had = Boolean(authState.token);
+  if (bridge.hasCalls()) bridge.cancel('退出登录');
+  authState.token = '';
+  storedCredentials = saveCredentialStore(runtimeRoot, {
+    token: '',
+    tokenIssuedAt: 0,
+    tokenExpiresAt: 0,
+    absoluteExpiresAt: null,
+    source: 'logged-out',
+  });
+  authSource = 'none';
+  authStatus = {
+    ...authStatus,
+    source: 'none',
+    tokenExpiresAt: null,
+    absoluteExpiresAt: null,
+    needLogin: '已退出登录：请用「打开登录页」或粘贴回跳网址重新登录',
+  };
+  // 没有 token 时内核无法提供服务，留着只会让请求 401 并被看门狗反复重起
+  try {
+    kernel?.close();
+  } catch {}
+  kernel = null;
+  kernelKey = 'default';
+  kernelInfo = { client: 'default', promptChars: 0, promptSha: null, verified: null };
+  resetSessions();
+  console.log('[teleagent] 已退出登录：凭据已清空，内核已停机，等待重新登录');
+  return { ok: true, hadToken: had, status: { ...authStatus, hasToken: false } };
+}
+
 /** 管理台导入 Cookie 对：粘贴浏览器登录页的 Cookie 头（operToken=...; operationToken=...）。 */
 function parseCookieHeader(raw) {
   const out = {};
@@ -530,6 +576,7 @@ const shim = await createShim({
       loginPageUrl: process.env.TA_LOGIN_PAGE_URL || null,
     }),
     login: handleAdminLogin,
+    logout: handleAdminLogout,
     setCookies: handleCookieImport,
     // gui-companion：手动续期同样拒绝（双客户端竞争，2026-11-21 实测 40115）。
     // 显式覆盖：TA_RENEW_MODE=nas（PC 上想让反代独占换发时用，自担风险）。
