@@ -218,6 +218,11 @@ node tools/ccswitch-provider.mjs --app claude --apply   # Claude 那条同理
 
 模型清单来自桌面端 `users/<scope>/model-catalog.json`，桌面端下发新模型后重启代理即可生效。
 
+> 「上下文」列取自该文件的 `limits.context`，**跟随桌面端「设置 → 上下文大小」**（可选
+> 200K / 400K / 600K / 800K / 1M，默认 400K）。反代的 `/v1/models` 与
+> `tools/ccswitch-provider.mjs` 都读同一份文件，不会出现两边报不同值。
+> 调大前请注意：客户端会按这个值决定何时压缩历史，报大了它就不压缩，真用超了反而更晚暴露问题。
+
 ## 接口
 
 | 方法 | 路径 | 说明 |

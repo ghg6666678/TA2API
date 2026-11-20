@@ -9,10 +9,32 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { accountDir, resolveOwner, readJson } from '../lib/paths.mjs';
 
 const DB = path.join(os.homedir(), '.cc-switch', 'cc-switch.db');
 const BASE_URL = process.env.TA_BASE_URL || 'http://127.0.0.1:8787';
 const TOKEN = process.env.TA_API_KEY || 'sk-teleagent-local';
+
+/**
+ * 上下文上限跟随桌面端设置，不在此硬编码。
+ *
+ * 桌面版「设置 → 上下文大小」是账号级设置，可选 200K/400K/600K/800K/1M，
+ * 落盘在 accountDir 的 model-catalog.json（limits.context）。反代的 /v1/models
+ * 也读同一份文件——两边同源，避免出现「反代报 1M、CC Switch 报 400K」这种打架。
+ * 读不到时回落 400000（官方原默认值）。
+ */
+function catalogContextOf(modelId) {
+  try {
+    const catalog = readJson(path.join(accountDir(resolveOwner()), 'model-catalog.json'), null);
+    const list = (catalog?.state?.catalog?.groups ?? []).flatMap((g) => g.models ?? []);
+    const hit = list.find((m) => m.modelID === modelId);
+    const ctx = Number(hit?.limits?.context);
+    return Number.isFinite(ctx) && ctx > 0 ? ctx : 400000;
+  } catch {
+    return 400000;
+  }
+}
+
 const argv = process.argv.slice(2);
 const args = new Set(argv);
 const argValue = (name, fallback) => {
@@ -51,9 +73,9 @@ const settingsConfig = appType === 'codex'
       ].join('\n'),
       modelCatalog: {
         models: [
-          { model: 'chat-pro', displayName: 'TeleAgent 智能 x0.6', contextWindow: 400000, inputModalities: ['text'] },
-          { model: 'chat-flash', displayName: 'TeleAgent 极速 x0.2', contextWindow: 400000, inputModalities: ['text'] },
-          { model: 'chat-flagship', displayName: 'TeleAgent 旗舰 x1.0', contextWindow: 400000, inputModalities: ['text'] },
+          { model: 'chat-pro', displayName: 'TeleAgent 智能 x0.6', contextWindow: catalogContextOf('chat-pro'), inputModalities: ['text'] },
+          { model: 'chat-flash', displayName: 'TeleAgent 极速 x0.2', contextWindow: catalogContextOf('chat-flash'), inputModalities: ['text'] },
+          { model: 'chat-flagship', displayName: 'TeleAgent 旗舰 x1.0', contextWindow: catalogContextOf('chat-flagship'), inputModalities: ['text'] },
         ],
       },
     }
