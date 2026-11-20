@@ -71,7 +71,7 @@ data/TeleAgent/                       ← 挂载为容器 /data/TeleAgent
 如果跑过 `docker/export-credentials.mjs`（第 2.4 节），这些文件已自动汇总在
 导出目录的 `TeleAgent-layout/` 里，整体拷过来即可。
 
-### 2.2 NAS 首次登录（用浏览器 Cookie，一步完成）
+### 2.2 首次登录（用浏览器 Cookie 拿到可用 token）
 
 > 2026-11-21 实测结论：**不要试图从登录回执页复制 token。**
 > 桌面端 OAuth 链（`.../cowork/auth?source=01`）授权后会停在
@@ -81,8 +81,11 @@ data/TeleAgent/                       ← 挂载为容器 /data/TeleAgent
 >
 > 可用通道是**平台 Cookie**：`operationToken` 的值是 `<租户>:<accessToken>`，
 > 其中 accessToken 与凭据库里的 `token` **逐字节相同**（实测 639 字节完全一致）。
-> 拿到它就等于拿到登录 token；而这对 Cookie 本来又是自动续期要用的凭据——
-> 一次粘贴同时解决「登录」和「续期」。
+> 拿到它就等于拿到一个可用的登录 token。
+>
+> ⚠ **这一节只解决「有 token 可用」，不解决「能不能自动续期」。**
+> 续期还要服务端存在对应的「换发会话」，而该会话不在 Cookie 里——
+> 详见 2.3 节末尾的实测与限制。
 
 1. 启动容器（见第 6 节）。日志会显示「尚未登录：内核暂不启动」，属预期状态。
 2. 局域网浏览器打开 `http://NAS_IP:8787/admin?token=<TA_ADMIN_TOKEN>`，
@@ -100,8 +103,8 @@ data/TeleAgent/                       ← 挂载为容器 /data/TeleAgent
    `[teleagent] cookie 成功：generation=…`。
 6. 验证：按第 7 节发一次对话请求，应返回 200。
 
-> 只给 `operationToken` 也能登录；但**自动续期建议连 `operToken` 一起给**（方式 A 天然成对）。
-> 实现上缺哪个就只发哪个，不会报错，但成对齐全时服务端定位换发会话更稳。
+> 只给 `operationToken` 也能登录（已实测）；`operToken` 只影响换发，不影响对话。
+> 方式 A 天然成对，推荐。
 >
 > **NAS 上没有浏览器/F12 怎么办**：Cookie 与设备无关。在任意一台电脑的浏览器登录同一账号、
 > 取出 Cookie，再粘到 NAS 的管理台即可。或者直接走 2.4 节的 PC 导出迁移。
@@ -125,8 +128,8 @@ data/TeleAgent/                       ← 挂载为容器 /data/TeleAgent
 - **⚠ 平台 Cookie 对（operToken / operationToken）是换发会话定位要素**：
   2026-11-20 实证，官方桌面端的换发请求经 Electron net.fetch 自动携带
   `.teleai.com.cn` 域的这对 Cookie（登录页响应 Set-Cookie 种下，明文存于
-  owner partition 的 Cookies 库）；**只发六个头、不带 Cookie 会被服务器判
-  `40115 session_not_found`**（「手动续期」报「凭据已失效」就是这个原因）。
+  owner partition 的 Cookies 库）；只发六个头、不带 Cookie 会被服务器判
+  `40115 session_not_found`——**但带上 Cookie 并不保证换发成功，见本节末尾实测**。
   TA2API 的换发已带上 Cookie，来源优先级：
   1. 自管库 `store.json` 的 `cookies` 字段（NAS 主通道）；
   2. PC 兼容通道：运行时从桌面端 partition Cookies 库读取（Node ≥22.13，自动回写自管库）；
@@ -141,6 +144,30 @@ data/TeleAgent/                       ← 挂载为容器 /data/TeleAgent
   日常运行不中断尝试。其中 `40116` 即**约 90 天的会话绝对期限**——
   最坏情况每 90 天需要在管理台重新登录一次。
 - **完全关闭**：`TA_RENEW_INTERVAL_MS=0`（只保留管理台「手动续期」按钮）。
+
+> **⚠ 2026-11-21 实测：Cookie 齐全也可能换不了发（会话已不存在）**
+>
+> 场景：容器内使用桌面版导出的凭据，`token` 与 `operationToken` 里的 accessToken
+> 逐字节相同、`deviceId` 与桌面版 `app-meta` 完全一致、**桌面版进程未运行**
+> （排除双客户端竞争）。发一次换发请求：
+>
+> ```
+> http=401  code=40115  body={"code":40115,"message":"session not found"}
+> ```
+>
+> 再对照三种 UA（无 UA / Electron `TeleAgent/3.1.1` / Chrome+`sec-ch-ua`），
+> 结果**完全相同**——与 UA、指纹无关。
+>
+> 结论：服务端按**登录会话**判定，而不是按 Cookie 判定。Cookie（尤其 `operToken`
+> 里的 `jwtInfoId`）只是会话索引，会话本身在服务端有独立生命周期；桌面端退出登录
+> （`POST /cowork/logout`）会清掉它。
+>
+> **判据**：换发 40115 但对话正常 ⇒ token 仍可用、只是续不上了。
+> 管理台会显示「自动续期失败（session_not_found）… 当前 token 仍有效至 X」，
+> 不会再误报「凭据已失效」。
+>
+> **恢复方式**：重新登录一次，趁会话新鲜时立刻导入凭据，然后点一次「手动续期」
+> 验证。若仍 40115，说明该路径自续期不可用，只能按 token 到期日定期换凭据。
 - **双模式（2026-11-21）**：反代启动时自动判定部署形态，`TA_RENEW_MODE=nas|gui` 可显式覆盖：
   - **nas**（默认，NAS/容器独占）：上文的换发闭环全功能启用——这是 NAS 部署的正常形态。
   - **gui-companion**（PC 上自动检测到桌面版数据目录 `Local State` 时）：

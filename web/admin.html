@@ -309,7 +309,7 @@
       <div id="authBanner" style="display:none; padding:10px 14px; border-radius:10px; margin:8px 0 0; background:rgba(229,72,77,.12); color:#e5484d; font-size:13px;"></div>
       <div id="cookieImportBox" style="margin-top:10px;">
         <p class="desc" style="margin:0 0 6px;">
-          <b>用 Cookie 登录（推荐，一步完成登录 + 续期凭据）</b><br>
+          <b>用 Cookie 登录（推荐）</b>——导入后立刻可用，同时写入换发所需的 Cookie。<br>
           <b>做法 A（最省事）</b>：浏览器登录官方站点后按 F12 → <b>Network</b> → 刷新一下 →
           点任意一条发往 <code>teleai</code> 的请求 → 在 <b>Request Headers</b> 里找到
           <code>cookie:</code>，复制冒号后面<b>整段</b>粘贴到下面（一次拿到两个值）。<br>
@@ -536,7 +536,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
       <li>点 <b>打开官方登录页</b>（新窗口），用短信验证码完成登录；跳进网页版 <code>/teleagent</code> 界面是正常现象。</li>
       <li>在该窗口按 <b>F12</b> → <b>Network</b> → 刷新 → 点任意一条发往 teleai 的请求 →
           <b>Request Headers</b> 里找到 <code>cookie:</code>，复制冒号后整段。</li>
-      <li>回到管理台「用 Cookie 登录」框粘贴 → 点<b>导入并登录</b>。登录和续期凭据一次性搞定。</li>
+      <li>回到管理台「用 Cookie 登录」框粘贴 → 点<b>导入并登录</b>。token 立刻生效；换发用的 Cookie 也一并写入。</li>
     </ol>
     <p class="desc" style="color:#9aa0a6; font-size:12px; margin:0 0 10px;">
       手机上没有 F12？在地址栏前加 <code>view-source:</code> 不方便的话，用电脑浏览器登录同一账号，
@@ -1152,7 +1152,13 @@ curl http://127.0.0.1:8787/v1/chat/completions \
       : '';
     var banner = $a('authBanner');
     if (st.needLogin) {
-      banner.textContent = '⚠ ' + st.needLogin + '：点「登录账号」完成一次登录即可恢复';
+      // 续期失败 ≠ token 失效：session_not_found 只说明换发会话找不到，
+      // 当前 access token 往往仍有效到 exp。分开说，别让人误以为整个凭据废了。
+      var stillValid = st.hasToken && st.tokenExpiresAt && st.tokenExpiresAt > Date.now();
+      banner.textContent = stillValid
+        ? '⚠ ' + st.needLogin + '。当前 token 仍有效至 ' + fmtTs(st.tokenExpiresAt) +
+          '，对话请求不受影响；到期后无法自动续期，届时需重新登录。'
+        : '⚠ ' + st.needLogin + '：点「登录账号」完成一次登录即可恢复';
       banner.style.display = '';
     } else if (st.absoluteExpiresAt && st.absoluteExpiresAt - Date.now() < 7 * 86400000 && !guiMode) {
       banner.textContent = '⚠ 会话将在 ' + fmtTs(st.absoluteExpiresAt) + ' 前后到期（会话绝对期限），届时需重新登录';
