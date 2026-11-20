@@ -295,6 +295,18 @@
       </div>
     </section>
 
+    <section class="card panel" id="authPanel" style="display:none">
+      <div class="panel-head">
+        <h2>登录态与自动续期</h2>
+        <div style="display:flex; gap:8px;">
+          <button class="btn" id="authRenewBtn">手动续期</button>
+          <button class="btn primary" id="authLoginBtn">打开登录页</button>
+        </div>
+      </div>
+      <p class="desc" id="authSummary">加载中…</p>
+      <div id="authBanner" style="display:none; padding:10px 14px; border-radius:10px; margin:8px 0 0; background:rgba(229,72,77,.12); color:#e5484d; font-size:13px;"></div>
+    </section>
+
     <section class="card panel">
       <div class="panel-head">
         <h2>近 14 天调用趋势</h2>
@@ -491,6 +503,42 @@ curl http://127.0.0.1:8787/v1/chat/completions \
     </div>
     <div class="actions">
       <button class="btn primary" id="tOk">进入</button>
+    </div>
+  </div>
+</div>
+
+<div class="backdrop" id="mLogin">
+  <div class="modal wide">
+    <h3>登录 TeleAgent 账号</h3>
+    <p class="desc">在下方的官方登录页完成登录（支持短信验证码）。登录成功后本页会自动捕获回跳并写入凭据；
+       若未自动完成，可复制登录结束后浏览器地址栏的完整网址粘贴到下方提交。</p>
+    <div style="border:1px solid rgba(255,255,255,.14); border-radius:10px; overflow:hidden; height:440px; background:#fff;">
+      <iframe id="loginFrame" style="width:100%; height:100%; border:0;" src="about:blank" referrerpolicy="no-referrer"></iframe>
+    </div>
+    <div class="formrow" style="margin-top:10px;">
+      <input class="input" id="pasteUrl" type="text" placeholder="备用：粘贴含 /cowork/auth?...token=... 的完整回跳网址" />
+      <button class="btn" id="pasteSubmit">提交</button>
+    </div>
+    <div class="actions">
+      <button class="btn" id="loginClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="backdrop" id="mLogin">
+  <div class="modal wide">
+    <h3>登录 TeleAgent 账号</h3>
+    <p class="desc">在下方的官方登录页完成登录（支持短信验证码）。登录成功后本页会自动捕获回跳并写入凭据；
+       若未自动完成，可复制登录结束后浏览器地址栏的完整网址粘贴到下方提交。</p>
+    <div style="border:1px solid rgba(255,255,255,.14); border-radius:10px; overflow:hidden; height:440px; background:#fff;">
+      <iframe id="loginFrame" style="width:100%; height:100%; border:0;" src="about:blank" referrerpolicy="no-referrer"></iframe>
+    </div>
+    <div class="formrow" style="margin-top:10px;">
+      <input class="input" id="pasteUrl" type="text" placeholder="备用：粘贴登录回跳的完整网址（应包含 code/token 参数）" />
+      <button class="btn" id="pasteSubmit">提交</button>
+    </div>
+    <div class="actions">
+      <button class="btn" id="loginClose">关闭</button>
     </div>
   </div>
 </div>
@@ -1023,6 +1071,114 @@ curl http://127.0.0.1:8787/v1/chat/completions \
     if (document.querySelector('.backdrop.show')) return;
     load();
   }, 10000);
+})();
+</script>
+
+<script>
+/* ---------- 登录态 / 自动续期（NAS 自给自足通道，独立于上方主逻辑） ---------- */
+(function () {
+  var authVisible = false;
+  var loginPageUrl = ''; // 由服务端 /admin/api/auth 下发，页面里不写死
+  var $a = function (id) { return document.getElementById(id); };
+  var token = localStorage.getItem('ta_admin_token') || '';
+  var esc = function (s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  };
+  function fmtTs(ts) {
+    if (!ts) return '—';
+    var d = new Date(ts);
+    var p = function (n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function authApi(path, opts) {
+    opts = opts || {};
+    var headers = { 'content-type': 'application/json' };
+    if (token) headers['x-admin-token'] = token;
+    return fetch(path, {
+      method: opts.method || 'GET',
+      headers: headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    }).then(function (res) {
+      return res.json().then(function (data) { return { status: res.status, data: data }; });
+    });
+  }
+  function renderAuth(st) {
+    if (!authVisible) { authVisible = true; $a('authPanel').style.display = ''; }
+    if (typeof st.loginPageUrl === 'string' && st.loginPageUrl) loginPageUrl = st.loginPageUrl;
+    var remain = st.hasToken ? 'token 有效' : '未登录';
+    if (st.tokenExpiresAt) {
+      var days = (st.tokenExpiresAt - Date.now()) / 86400000;
+      remain = days > 0 ? 'token 剩余 ' + days.toFixed(1) + ' 天' : 'token 已过期';
+    }
+    var abs = st.absoluteExpiresAt ? ' · 会话绝对期限 ' + fmtTs(st.absoluteExpiresAt) : '';
+    var last = st.lastAttempt
+      ? (st.lastAttempt.ok ? '上次续期成功' : '上次续期失败（' + esc(st.lastAttempt.category || '?') + '）')
+      : '尚未续期';
+    $a('authSummary').innerHTML =
+      '凭据来源 <b>' + esc(st.source || 'none') + '</b> · generation <b>' + esc(st.generation == null ? 0 : st.generation) +
+      '</b> · ' + remain + abs + ' · ' + last +
+      ' · 设备 <code>' + esc(st.deviceId || '—') + '</code>' +
+      (st.renewal && st.renewal.intervalMs ? ' · 续期间隔 ' + Math.round(st.renewal.intervalMs / 3600000) + 'h' : '');
+    var banner = $a('authBanner');
+    if (st.needLogin) {
+      banner.textContent = '⚠ ' + st.needLogin + '：点「打开登录页」完成一次登录即可恢复';
+      banner.style.display = '';
+    } else if (st.absoluteExpiresAt && st.absoluteExpiresAt - Date.now() < 7 * 86400000) {
+      banner.textContent = '⚠ 会话将在 ' + fmtTs(st.absoluteExpiresAt) + ' 前后到期（会话绝对期限），届时需重新登录';
+      banner.style.display = '';
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+  function loadAuth() {
+    authApi('/admin/api/auth').then(function (r) {
+      if (r.status === 200 && r.data && r.data.renewal) renderAuth(r.data);
+    }).catch(function () {});
+  }
+  $a('authRenewBtn').addEventListener('click', function () {
+    $a('authRenewBtn').disabled = true;
+    authApi('/admin/api/auth/renew', { method: 'POST' }).then(function () {
+      $a('authRenewBtn').disabled = false;
+      loadAuth();
+    }).catch(function () { $a('authRenewBtn').disabled = false; });
+  });
+  function submitUrl(url) {
+    if (!url) return;
+    authApi('/admin/api/auth/login', { method: 'POST', body: { url: url } }).then(function (r) {
+      if (r.status === 200 && r.data && r.data.ok) {
+        $a('pasteUrl').value = '';
+        $a('mLogin').classList.remove('show');
+        $a('loginFrame').src = 'about:blank';
+        loadAuth();
+      } else {
+        window.alert((r.data && r.data.error) || '提交失败');
+      }
+    });
+  }
+  $a('authLoginBtn').addEventListener('click', function () {
+    if (!loginPageUrl) {
+      window.alert('服务端未配置 TA_LOGIN_PAGE_URL（官方登录页地址，见部署指南）。\n当前仍可用备用通道：在任意浏览器完成登录后，把地址栏完整网址粘贴到本窗口的输入框提交。');
+      return;
+    }
+    $a('loginFrame').src = loginPageUrl;
+    $a('mLogin').classList.add('show');
+    loadAuth();
+  });
+  $a('loginClose').addEventListener('click', function () {
+    $a('mLogin').classList.remove('show');
+    $a('loginFrame').src = 'about:blank';
+  });
+  $a('pasteSubmit').addEventListener('click', function () { submitUrl($a('pasteUrl').value.trim()); });
+  // 官方登录页在登录完成后向父窗口 postMessage {type:'loginRedirect', url}（与官方 Web 登录壳同机制）
+  window.addEventListener('message', function (ev) {
+    var d = ev.data;
+    if (!d || d.type !== 'loginRedirect' || typeof d.url !== 'string') return;
+    submitUrl(d.url);
+  });
+  loadAuth();
+  setInterval(function () { if (!document.hidden) loadAuth(); }, 15000);
 })();
 </script>
 </body>

@@ -1,0 +1,38 @@
+services:
+  ta2api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        # 可选：构建机 TARGETARCH 未注入时手动指定 amd64 / arm64
+        TARGETARCH: ${TA_ARCH:-}
+    image: ta2api:local
+    container_name: ta2api
+    restart: unless-stopped
+    environment:
+      TA_HOST: "0.0.0.0"                      # 局域网访问（TA_HOST 已内置于 2026-11-20 版 server.mjs）
+      TA_PORT: "8787"
+      TA_API_KEY: "${TA_API_KEY:?请在 .env 设置 Bearer 密钥}"
+      TA_ADMIN_TOKEN: "${TA_ADMIN_TOKEN:?请在 .env 设置管理台令牌}"
+      # 局域网打开管理台需要同时开这两个开关（远程访问强制带令牌）
+      TA_ADMIN_ALLOW_REMOTE: "1"
+      # 官方登录页地址（NAS 首次登录用，见 DEPLOY-GUIDE.md 第 2 节；不设则用「粘贴回跳网址」通道）
+      TA_LOGIN_PAGE_URL: "${TA_LOGIN_PAGE_URL:-}"
+      TA_GATEWAY_KEY_FILE: /run/secrets/gateway_key
+      TA_DATA_ROOT: /data
+      # 看门狗与自续期
+      TA_WATCHDOG_MS: "15000"
+      TA_RENEW_INTERVAL_MS: "21600000"        # 6h；同一天只尝试一次（与官方客户端一致）。0 = 关闭自动续期
+    secrets:
+      - gateway_key
+    ports:
+      - "8787:8787"
+    volumes:
+      # 账号配置布局（current-owner.json / .version.json / users/<ownerDir>/…）——不含密钥
+      - ./data/TeleAgent:/data/TeleAgent
+      # 运行状态持久化：凭据库(credentials/)、API 密钥(config/api-keys.json)、内核数据与日志
+      - ./data/runtime:/app/runtime
+
+secrets:
+  gateway_key:
+    file: ./gateway_key.txt

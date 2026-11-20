@@ -15,7 +15,8 @@
     "probe:prompt": "node tools/probe-prompt.mjs",
     "probe:tools": "node tools/probe-tools.mjs",
     "capture": "node tools/capture-upstream.mjs",
-    "test:tools": "node tools/test-tool-relay.mjs"
+    "test:tools": "node tools/test-tool-relay.mjs",
+    "test:credentials": "node tools/test-credentials.mjs"
   },
   "keywords": [
     "teleagent",

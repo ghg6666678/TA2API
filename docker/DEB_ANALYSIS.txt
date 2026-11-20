@@ -1,0 +1,140 @@
+TeleAgent 3.1.1 Linux deb 包结构分析（Docker 部署依据）
+日期 2026-11-20
+============================================================
+
+只记录可复验的硬事实。来源为两个 deb 包本体与当前 TA2API v0.3.3 代码。
+
+一、包基本信息
+--------------
+文件：D:\Downloads\TeleAgent-3.1.1-amd64.deb   521,423,184 字节
+      D:\Downloads\TeleAgent-3.1.1-arm64.deb   487,197,452 字节
+格式：ar 归档 = debian-binary + control.tar.xz + data.tar.xz
+
+control（两包除 Architecture 外一致）：
+  Package: teleagent
+  Version: 3.1.1-1
+  Vendor/Maintainer: 中电信人工智能科技（北京）有限公司
+  Architecture: amd64 / arm64
+  Installed-Size: 1,117,319 / 1,089,580 (KB)
+  Depends: libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6,
+           xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0
+  Recommends: libappindicator3-1
+  Homepage: https://teleai.com.cn
+  注意：这些依赖是给 Electron GUI 主程序用的；Go 内核是静态链接，不需要它们。
+
+二、data.tar.xz 关键内容（~967 个条目）
+---------------------------------------
+主程序（容器不需要）：
+  ./opt/TeleAgent/teleagent                219,811,064 字节  Electron 主进程
+  ./opt/TeleAgent/resources/app.asar       498,728,892 字节  前端
+  ./opt/TeleAgent/libGLESv2.so / libvulkan.so.1 / libffmpeg.so / libEGL.so 等
+  ./opt/TeleAgent/chrome-sandbox / chrome_crashpad_handler
+  ./usr/share/applications/teleagent.desktop (Exec=/opt/TeleAgent/teleagent %U)
+
+内核与工具链（Docker 真正需要的，全部在 ./opt/TeleAgent/resources/ 下）：
+  super-agent-code-linux-x64.tar.gz        17,669,125 字节
+  super-agent-code-linux-arm64.tar.gz      15,349,177 字节（在 arm64 包内）
+  python-linux-x64.tar.gz                 111,508,099 字节
+  python-linux-arm64.tar.gz               （arm64 包内，未单独测量）
+  node-linux-x64.tar.gz                    57,224,421 字节
+  node-linux-arm64.tar.gz                  （arm64 包内）
+  teleagent-ais-linux-x64.tar.gz           11,751,213 字节
+  teleagent-ais-linux-arm64.tar.gz         （arm64 包内）
+  ripgrep/linux-x64/rg                      6,597,984 字节  mode 755
+  ripgrep/linux-arm64/rg                    5,233,424 字节  mode 755（x64 包内也带）
+
+super-agent-code-linux-*.tar.gz 解包结构（仅 2 文件）：
+  super-agent-code/bin/TeleAgent     Go 后端服务器本体
+  super-agent-code/package.json      名称 @teleai-agent/super-agent-code-linux-{x64,arm64}
+                                     版本 3.1.1-dev-3-1-1-20261118111515
+
+其他工具链解包结构：
+  python-linux-x64.tar.gz        -> python/bin/python3, python/bin/pip ...
+  node-linux-x64.tar.gz          -> node-v24.18.0-linux-x64/bin/node ...
+  teleagent-ais-linux-x64.tar.gz -> ais/bin/ais, ais/package.json
+
+三、内核二进制 ELF 鉴定（关键结论）
+-----------------------------------
+用 Python 直接读 ELF Program Header：
+  x64:   class=2 (ELF64) machine=0x3e (x86-64)  PT_INTERP=None  PT_DYNAMIC=False
+  arm64: class=2 (ELF64) machine=0xb7 (aarch64) PT_INTERP=None  PT_DYNAMIC=False
+结论：两个架构的内核均为完全静态链接，不依赖 glibc/GTK/X11。
+      → 可用 distroless/scratch 类最小镜像，无需在容器内装桌面库。
+      → 这也是"官方 Linux 二进制移植到 Docker"能成立的根本原因。
+
+sha256（本工作区实测）：
+  super-agent-code-linux-x64.tar.gz      38d0faee9c471f403511c4a6e0c46dcce950da544bb530986f7282815c4c3a9d
+  super-agent-code-linux-arm64.tar.gz    5bfa6ff4b060e5ae6cb633bb59b8a39a8d71458611d556327a79f00d7b287938
+  解包后 TeleAgent(x64)                  26f1008b4066c45a1eb5f193261d5aa78f1b4a5dab3c7040d924ec66c4c11b40
+  解包后 TeleAgent(arm64)                fd3a5f979305645d5b4ec847762276a5407ad055f735e89a1ae5bdd09aafaffc
+
+重要（避免误用 hashes）：deb 内 runtimes.version.json 写的是
+  superAgentCodeHash = 26f1008b... = 解包后 x64 内核二进制的 sha256
+  superagentChecksum = 38d0faee... = x64 tar.gz 的 sha256
+即版本文件里的两个 hash 一个是"包"一个是"二进制"，名字相近但含义不同。
+
+四、runtimes.version.json（x64 包内原值）
+-----------------------------------------
+{
+  "superAgentCode": "3.1.1-dev-3-1-1-20261118111515",
+  "superAgentCodeFile": "super-agent-code-linux-x64.tar.gz",
+  "superAgentCodeHash": "26f1008b4066c45a1eb5f193261d5aa78f1b4a5dab3c7040d924ec66c4c11b40",
+  "superagentChecksum": "38d0faee9c471f403511c4a6e0c46dcce950da544bb530986f7282815c4c3a9d",
+  "ais": "0.0.0-dev-3-1-0-20261113150355",
+  "aisFile": "teleagent-ais-linux-x64.tar.gz",
+  "aisChecksum": "aa145365677ed48f1fde90ff511e28f93b4e331acd8686beb67024da46dd4621",
+  "python": "3.12.13",
+  "pythonFile": "python-linux-x64.tar.gz",
+  "pythonChecksum": "86232383051a0950a74a9486949c87f88da45978bafa8d826c2f268629a3f508",
+  "node": "24.18.0",
+  "nodeFile": "node-linux-x64.tar.gz",
+  "nodeChecksum": "783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8"
+}
+注：这里 aisChecksum/pythonChecksum/nodeChecksum 均为对应 tar.gz 的 sha256。
+
+五、TA2API v0.3.3 中与部署相关的现状（源码核对）
+-----------------------------------------------
+lib/paths.mjs:
+  KERNEL_BINARY = ~/.local/share/TeleAgent/runtimes/super-agent-code/bin/TeleAgent
+                  （Linux 上文件名不带 .exe，正好匹配 deb 解包产物）
+  DEVICE_DATA_ROOT = ~/.local/share/TeleAgent
+  resolveOwner() 读 current-owner.json；tokenFile 指向 users/<owner>/app-auth/token.json
+lib/kernel.mjs startKernel():
+  spawn(KERNEL_BINARY, [], {cwd, env, stdio:[inFd,outFd,errFd]}) —— 无命令行参数
+  配置通过 stdin：4 字节大端长度 + JSON（含 SERVER_PORT、SUPER_AGENT_AUTH_STATE 等）
+  origin = http://127.0.0.1:<随机或指定端口>
+  SUPER_AGENT_APP_DATA_DIR / CONFIG_DIR 指向 DEVICE_* 根
+lib/auth.mjs:
+  dpapiMasterKey() 调用 powershell.exe + System.Security.ProtectedData 解 DPAPI 主密钥
+  decryptV10() 用该密钥做 AES-256-GCM 解 token.json 里的 encryptedToken
+  → Linux 无 DPAPI，这是 v0.3.3 直接上 Linux 的硬障碍
+lib/shim.mjs:
+  createShim 形参 host='127.0.0.1'；server.listen(port, host)
+  server.mjs 调 createShim 时未传 host → 实际固定 127.0.0.1
+  → 容器端口映射访问不到；需最小补丁把 host 提到 env（见部署指南）
+server.mjs 现有 env（全清单）：
+  TA_ADMIN_TOKEN, TA_ALLOW_KERNEL_TOOLS, TA_API_KEY, TA_BUILTIN_PROMPT,
+  TA_DEBUG_DIR, TA_DEFAULT_MODEL, TA_FALLBACK_PROMPT, TA_GATEWAY_KEY,
+  TA_KEYS_FILE, TA_OPEN_ADMIN, TA_PORT, TA_TIMING, TA_UPSTREAM_BASE_URL
+  不存在：TA_ADMIN_ALLOW_REMOTE / TA_CRYPT_KEY / TA_REQUIRE_AUTH / TA_RENEW_*
+
+六、docs/nas-docker.md 与当前代码的关系（防止照抄踩坑）
+--------------------------------------------------------
+docs/nas-docker.md（v0.7.5 设计）描述的能力，在 v0.3.3 代码中 grep 均为 0 命中：
+  docker/ 目录、Dockerfile、compose、entrypoint      —— 不存在
+  tools/export-credentials.mjs                       —— 不存在
+  tools/renew-credentials.mjs / import-login-token.mjs —— 不存在
+  TA_ADMIN_ALLOW_REMOTE / TA_REQUIRE_AUTH / TA_CRYPT_KEY —— 不存在
+  GHCR 镜像 ghcr.io/ghg6666678/ta2api:latest          —— 本会话无 read:packages
+                                                        权限，无法验证是否存在
+结论：该文档只能当作"目标形态参考"，不能当作"当前可用步骤"。
+本工作区给出的部署指南以当前 v0.3.3 源码为准，并明确标注需要的最小补丁。
+
+七、局域网访问限制的真实性
+--------------------------
+用户判断"原项目似乎不支持局域网访问"属实，且有两层：
+  1) shim 固定绑 127.0.0.1（server.mjs 未传 host，shim.mjs 默认回环）
+  2) 内核 origin 也固定 127.0.0.1（kernel.mjs）
+但这是"代理层/内核层"的绑定，与官方 CLI 无关；在容器里给 shim 加 host=0.0.0.0
+即可通过 docker -p 暴露。docs/ADMIN.md 里的 TA_ADMIN_ALLOW_REMOTE 是未来设计，
+当前不可用。
