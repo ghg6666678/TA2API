@@ -18,6 +18,8 @@ import {
   startRenewalLoop,
   extractLoginResult,
   jwtExpiresAt,
+  tokenIat,
+  detectRenewalMode,
   readPlatformCookies,
   parseSetCookies,
 } from './lib/credentials.mjs';
@@ -44,23 +46,49 @@ if (missing.length > fatalMissing.length) {
 const owner = resolveOwner();
 const runtimeRoot = path.join(here, 'runtime');
 
-// 凭据来源优先级：自管凭据库（runtime/credentials/store.json，支持自动续期，NAS/容器主通道）
-// > 桌面端 DPAPI token.json（Windows 兼容通道）。两者皆无也允许启动——管理台登录后即可拉起内核。
+// 部署模式（2026-11-21 用户决策）：
+//   gui-companion —— PC 上桌面版与反代共存：桌面版独占 token 换发（双客户端都换发会
+//     互相挤掉会话 → 40115 session_not_found，实测），反代 token 以桌面版 token.json
+//     为权威（dpapi 通道），watcher 跟随其更新热换核；换发功能整体停用。
+//   nas —— 容器/NAS 独占：自管凭据库 + 自动换发闭环（现状全功能）。
+const renewMode = detectRenewalMode({ deviceDataRoot: DEVICE_DATA_ROOT });
+const guiCompanion = renewMode.mode === 'gui-companion';
+
+// 凭据来源优先级（按模式反转）：
+//   nas           ：自管凭据库（runtime/credentials/store.json，支持自动续期）> dpapi；
+//   gui-companion ：桌面版 token.json（dpapi，桌面版换发后实时更新它）> 自管库——
+//     store.json 里的 token 在双客户端场景下会滞后于桌面版，不能遮蔽权威来源。
+// 两者皆无也允许启动——管理台登录后即可拉起内核。
 const device = ensureDeviceIdentity(runtimeRoot, deviceMeta());
 let storedCredentials = loadCredentialStore(runtimeRoot);
 let auth = null;
 let authSource = 'none';
-if (storedCredentials?.token) {
-  auth = { token: storedCredentials.token, tenant: '', claims: parseJwt(storedCredentials.token) };
-  authSource = 'credentials';
-} else {
-  try {
-    auth = await loadAuthState({ tokenFile: tokenFile(owner) });
-    if (auth?.token) authSource = 'dpapi';
-  } catch (err) {
-    console.warn(`[teleagent] 桌面端登录态不可用（${err.message}）`);
+async function loadPrimaryAuth() {
+  if (guiCompanion) {
+    try {
+      const a = await loadAuthState({ tokenFile: tokenFile(owner) });
+      if (a?.token) return { auth: a, source: 'dpapi' };
+    } catch (err) {
+      console.warn(`[teleagent] 桌面版登录态不可用（${err.message}），回退自管凭据库`);
+    }
   }
+  if (storedCredentials?.token) {
+    return {
+      auth: { token: storedCredentials.token, tenant: '', claims: parseJwt(storedCredentials.token) },
+      source: 'credentials',
+    };
+  }
+  if (!guiCompanion) {
+    try {
+      const a = await loadAuthState({ tokenFile: tokenFile(owner) });
+      if (a?.token) return { auth: a, source: 'dpapi' };
+    } catch (err) {
+      console.warn(`[teleagent] 桌面端登录态不可用（${err.message}）`);
+    }
+  }
+  return { auth: null, source: 'none' };
 }
+({ auth, source: authSource } = await loadPrimaryAuth());
 if (!auth?.token) {
   console.warn('[teleagent] 尚未登录：内核暂不启动。请打开管理台完成登录，或在 PC 上完成一次桌面端登录。');
 }
@@ -75,7 +103,9 @@ if (models.length === 0) {
   process.exit(1);
 }
 
-console.log(`[teleagent] 账号 ${auth?.claims?.accountName ?? '?'} · kernel ${kernelVersion()} · 凭据来源 ${authSource}`);
+console.log(
+  `[teleagent] 账号 ${auth?.claims?.accountName ?? '?'} · kernel ${kernelVersion()} · 凭据来源 ${authSource} · 续期模式 ${renewMode.mode}（${renewMode.reason}）`,
+);
 
 const authState = { token: auth?.token ?? '', deviceId: device.deviceId, installId: device.installId };
 
@@ -258,10 +288,15 @@ watchdog.unref?.();
  * 凭据续期（官方 token-refresh 协议复刻）—— NAS 7×24 自给自足的核心。
  * 有 token 才轮询；换发成功后落库 + 热替换 authState + 换核。
  * 节奏与桌面端一致：启动补偿 + 每 6h，同一自然日只尝试一次。
- * 完全禁用：设 TA_RENEW_INTERVAL_MS=0。
+ * 完全禁用：设 TA_RENEW_INTERVAL_MS=0，或 TA_RENEW_MODE=gui。
+ *
+ * 双模式（2026-11-21）：PC 上桌面版独占换发（gui-companion，反代跟随），
+ * NAS/容器独占时才启用换发闭环（nas）——判定见 detectRenewalMode。
  * ---------------------------------------------------------------- */
 let authStatus = {
   source: authSource,
+  renewMode: renewMode.mode,
+  renewModeReason: renewMode.reason,
   generation: storedCredentials?.generation ?? (auth?.token ? 1 : 0),
   tokenExpiresAt: storedCredentials?.tokenExpiresAt ?? (auth?.claims?.exp ? auth.claims.exp * 1000 : null),
   absoluteExpiresAt: storedCredentials?.absoluteExpiresAt ?? null,
@@ -298,6 +333,9 @@ const renewal = startRenewalLoop({
   deviceId: authState.deviceId,
   getToken: () => authState.token,
   getCookies: cookieForRenewal,
+  // gui-companion：换发整体停用——intervalMs 0 会同时关掉定时器与启动补偿
+  //（桌面版独占换发，反代任何换发尝试都是双客户端竞争，实测必 40115）
+  intervalMs: guiCompanion ? 0 : undefined,
   onRenewed: ({ token, expiresIn, absoluteExpiresAt, generation }) => {
     authState.token = token; // startKernel 被调用时才读 authState → 之后任何 spawn/换核都带上新 token
     cookiesCache = loadCredentialStore(runtimeRoot)?.cookies ?? cookiesCache;
@@ -324,6 +362,65 @@ const renewal = startRenewalLoop({
     authStatus = { ...authStatus, lastAttempt: r };
   },
 });
+
+/* ----------------------------------------------------------------
+ * gui-companion 跟随 watcher：桌面版每次换发成功都会重写 token.json，
+ * watcher 定期对比文件指纹；变化才走 DPAPI 解密并按 JWT iat 比较——
+ * 「谁新用谁」：管理台刚登录的新 token（iat 更大）不会被桌面版旧 token 覆盖。
+ * 采用后热换核（与用户手动重启反代等效，但无感）。
+ * NAS 模式不启动（换发闭环自己维护 authState）。
+ * ---------------------------------------------------------------- */
+let followedFingerprint = null;
+async function followDesktopToken() {
+  const tf = tokenFile(owner);
+  const obj = readJson(tf, null);
+  const fp = obj ? crypto.createHash('sha256').update(JSON.stringify(obj)).digest('hex').slice(0, 16) : null;
+  if (followedFingerprint === null) {
+    followedFingerprint = fp; // 首轮只记基线，不触发换核
+    return false;
+  }
+  if (fp === followedFingerprint) return false;
+  followedFingerprint = fp;
+  try {
+    const a = await loadAuthState({ tokenFile: tf });
+    if (!a?.token || a.token === authState.token) return false;
+    const newIat = tokenIat(a.token);
+    const curIat = tokenIat(authState.token);
+    if (newIat != null && curIat != null && newIat <= curIat) {
+      console.log('[teleagent] 桌面版 token.json 已变化，但代际不新于当前 token，跳过');
+      return false;
+    }
+    authState.token = a.token;
+    authSource = 'dpapi';
+    authStatus = {
+      ...authStatus,
+      source: 'dpapi',
+      tokenExpiresAt: jwtExpiresAt(a.token),
+      needLogin: null,
+      followedAt: Date.now(),
+    };
+    console.log(
+      `[teleagent] 跟随桌面版换发：token 已更新（iat ${curIat ? new Date(curIat).toLocaleTimeString() : '?'} → ${new Date(newIat).toLocaleTimeString()}）`,
+    );
+    if (bridge.hasCalls()) {
+      console.warn('[teleagent] 工具调用挂起中——内核将在下次请求或看门狗周期换核生效');
+      return true;
+    }
+    forceRestartKernel('桌面版 token 已更新，跟随换核').catch((err) => {
+      console.error(`[teleagent] 跟随换核失败：${err.message}`);
+    });
+    return true;
+  } catch (err) {
+    console.warn(`[teleagent] 跟随桌面版 token 失败：${err.message}`);
+    return false;
+  }
+}
+if (guiCompanion) {
+  const follower = setInterval(() => {
+    followDesktopToken().catch(() => {});
+  }, Math.max(30_000, Number(process.env.TA_FOLLOW_INTERVAL_MS || 60_000)));
+  follower.unref?.();
+}
 
 /** 管理台登录：接收登录页回跳网址（iframe postMessage 或手工粘贴），提取 token → 落库 → 换核。 */
 async function handleAdminLogin(rawUrl) {
@@ -429,7 +526,19 @@ const shim = await createShim({
     }),
     login: handleAdminLogin,
     setCookies: handleCookieImport,
-    renew: () => renewal.tick(true),
+    // gui-companion：手动续期同样拒绝（双客户端竞争，2026-11-21 实测 40115）。
+    // 显式覆盖：TA_RENEW_MODE=nas（PC 上想让反代独占换发时用，自担风险）。
+    renew: () =>
+      guiCompanion
+        ? Promise.resolve({
+            status: 'skipped',
+            reason: 'gui-companion',
+            message:
+              `${renewMode.reason}。` +
+              '换发由桌面版负责，反代自动跟随其 token 更新，无需（也不应）手动续期。' +
+              '如需反代独占换发，设环境变量 TA_RENEW_MODE=nas 并重启（注意会与桌面版互相挤掉会话）。',
+          })
+        : renewal.tick(true),
   },
   port: Number(process.env.TA_PORT || 8787),
 });

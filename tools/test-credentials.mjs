@@ -20,6 +20,8 @@ import {
   saveCredentialStore,
   refreshToken,
   startRenewalLoop,
+  detectRenewalMode,
+  tokenIat,
   DEFAULT_AUTH_BASE,
 } from '../lib/credentials.mjs';
 
@@ -315,6 +317,29 @@ await t('TA_RENEW_INTERVAL_MS=0 → 循环禁用（不建定时器，仅手动 t
   assert.equal(l3.status().intervalMs, 0);
   l3.stop();
   delete process.env.TA_RENEW_INTERVAL_MS;
+});
+await t('detectRenewalMode：无 Local State → nas（自动）', () => {
+  const m = detectRenewalMode({ deviceDataRoot: '/nonexistent-ta-root', env: {} });
+  assert.equal(m.mode, 'nas');
+  assert.equal(m.explicit, false);
+});
+await t('detectRenewalMode：有 Local State → gui-companion（自动）', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ta-mode-'));
+  fs.writeFileSync(path.join(d, 'Local State'), '{}');
+  const m = detectRenewalMode({ deviceDataRoot: d, env: {} });
+  assert.equal(m.mode, 'gui-companion');
+  assert.equal(m.explicit, false);
+});
+await t('detectRenewalMode：TA_RENEW_MODE 显式覆盖检测', () => {
+  assert.equal(detectRenewalMode({ deviceDataRoot: '/nonexistent', env: { TA_RENEW_MODE: 'nas' } }).mode, 'nas');
+  assert.equal(detectRenewalMode({ deviceDataRoot: '/nonexistent', env: { TA_RENEW_MODE: 'gui' } }).mode, 'gui-companion');
+  assert.equal(detectRenewalMode({ localStateExists: true, env: { TA_RENEW_MODE: 'nas' } }).mode, 'nas');
+});
+await t('tokenIat：解析 JWT iat，坏 token 返回 null', () => {
+  const payload = Buffer.from(JSON.stringify({ iat: 1700000000, exp: 1700604800 })).toString('base64url');
+  const tok = `h.${payload}.s`;
+  assert.equal(tokenIat(tok), 1700000000 * 1000);
+  assert.equal(tokenIat('not-a-jwt'), null);
 });
 loop.stop();
 server.close();

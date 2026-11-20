@@ -1125,17 +1125,30 @@ curl http://127.0.0.1:8787/v1/chat/completions \
     var last = st.lastAttempt
       ? (st.lastAttempt.ok ? '上次续期成功' : '上次续期失败（' + esc(st.lastAttempt.category || '?') + '）')
       : '尚未续期';
+    var mode = st.renewMode || 'nas';
+    var modeLabel = mode === 'gui-companion' ? '桌面版跟随' : '自管续期';
     $a('authSummary').innerHTML =
       '凭据来源 <b>' + esc(st.source || 'none') + '</b> · generation <b>' + esc(st.generation == null ? 0 : st.generation) +
       '</b> · ' + remain + abs + ' · ' + last +
       ' · 设备 <code>' + esc(st.deviceId || '—') + '</code>' +
-      (st.renewal && st.renewal.intervalMs ? ' · 续期间隔 ' + Math.round(st.renewal.intervalMs / 3600000) + 'h' : '');
+      (st.renewal && st.renewal.intervalMs ? ' · 续期间隔 ' + Math.round(st.renewal.intervalMs / 3600000) + 'h' : '') +
+      ' · 模式 <b title="' + esc(st.renewModeReason || '') + '">' + esc(modeLabel) + '</b>';
+    // gui-companion：换发由桌面版独占（双客户端都换发会互相挤掉会话 → 40115），
+    // 手动续期禁用；Cookie 对也不需要（不换发），隐藏导入框避免误导。
+    var guiMode = mode === 'gui-companion';
+    $a('authRenewBtn').disabled = guiMode;
+    $a('authRenewBtn').title = guiMode
+      ? '桌面版已接管换发，反代自动跟随其 token 更新。如需反代独占换发，设环境变量 TA_RENEW_MODE=nas 并重启'
+      : '';
     var banner = $a('authBanner');
     if (st.needLogin) {
       banner.textContent = '⚠ ' + st.needLogin + '：点「打开登录页」完成一次登录即可恢复';
       banner.style.display = '';
-    } else if (st.absoluteExpiresAt && st.absoluteExpiresAt - Date.now() < 7 * 86400000) {
+    } else if (st.absoluteExpiresAt && st.absoluteExpiresAt - Date.now() < 7 * 86400000 && !guiMode) {
       banner.textContent = '⚠ 会话将在 ' + fmtTs(st.absoluteExpiresAt) + ' 前后到期（会话绝对期限），届时需重新登录';
+      banner.style.display = '';
+    } else if (guiMode && st.absoluteExpiresAt && st.absoluteExpiresAt - Date.now() < 7 * 86400000) {
+      banner.textContent = '⚠ 会话将在 ' + fmtTs(st.absoluteExpiresAt) + ' 前后到期——届时在桌面版重新登录即可，反代会自动跟随';
       banner.style.display = '';
     } else {
       banner.style.display = 'none';
@@ -1148,10 +1161,12 @@ curl http://127.0.0.1:8787/v1/chat/completions \
     var names = [];
     if (pc.operToken) names.push('operToken');
     if (pc.operationToken) names.push('operationToken');
-    row.innerHTML = hasCookie
-      ? '换发 Cookie：<b>已就绪</b>（' + esc(names.join('、')) + '）——续期可完全自动'
-      : '换发 Cookie：<b style="color:#e5484d">缺失</b>——自动续期会报 40115 session_not_found，请在下方导入';
-    $a('cookieImportBox').style.display = hasCookie ? 'none' : '';
+    row.innerHTML = guiMode
+      ? '换发 Cookie：桌面版负责换发，反代不需要（仅 NAS 模式使用）'
+      : hasCookie
+        ? '换发 Cookie：<b>已就绪</b>（' + esc(names.join('、')) + '）——续期可完全自动'
+        : '换发 Cookie：<b style="color:#e5484d">缺失</b>——自动续期会报 40115 session_not_found，请在下方导入';
+    $a('cookieImportBox').style.display = !guiMode && !hasCookie ? '' : 'none';
   }
   function loadAuth() {
     authApi('/admin/api/auth').then(function (r) {
@@ -1175,8 +1190,13 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   });
   $a('authRenewBtn').addEventListener('click', function () {
     $a('authRenewBtn').disabled = true;
-    authApi('/admin/api/auth/renew', { method: 'POST' }).then(function () {
+    authApi('/admin/api/auth/renew', { method: 'POST' }).then(function (r) {
       $a('authRenewBtn').disabled = false;
+      if (r.data && r.data.status === 'skipped' && r.data.message) {
+        var b = $a('authBanner');
+        b.textContent = 'ℹ ' + r.data.message;
+        b.style.display = '';
+      }
       loadAuth();
     }).catch(function () { $a('authRenewBtn').disabled = false; });
   });
