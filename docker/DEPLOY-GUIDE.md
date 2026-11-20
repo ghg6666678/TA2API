@@ -1,15 +1,18 @@
 # TeleAgent + TA2API 的 Linux / NAS Docker 部署指南（自给自足版）
 
-> 本文按 **2026-11-20 版 TA2API 代码**（v0.3.3 + 三协议工具中继 + 逐字流式 + 看门狗 +
-> 凭据自续期）和 **TeleAgent 3.1.1 官方 Linux deb 实测**编写，不是照抄 `docs/nas-docker.md`
-> （那份是 v0.7.x 的设计稿，其中多数能力当时不存在；本版把其中真正有价值的部分——
-> 局域网访问、自动续期——以实测协议复刻实现了，详见 `docker/DEB_ANALYSIS.txt`）。
+> 本文按 **2026-11-21 版 TA2API 代码**（三协议工具中继 + 逐字流式 + 看门狗 + 自管凭据库 +
+> 管理台登录）和 **TeleAgent 3.1.1 官方 Linux deb 实测**编写，不是照抄 `docs/nas-docker.md`
+> （那份是 v0.7.x 的设计稿，其中多数能力当时不存在）。
 >
-> 结论先行：**NAS 部署完全自给自足**——
-> - 首次登录在管理台完成（新窗口走 OAuth 直链 → 复制回执网址 → 粘贴即登录），不需要 PC 在场；
-> - 登录后每天自动续期（复刻官方 `token-refresh` 协议），7 天 token 永不过期；
-> - 唯一的硬限制：**会话有 ~90 天绝对期限**（官方协议 `40116 session_absolute_expired`），
->   届时在管理台重新登录一次即可，仍是全自动的日常运行。
+> **结论先行（含一条重要限制）**：
+> - 容器能完整跑起内核：三协议、工具中继闭环、看门狗自愈、局域网访问、管理台、卷持久化
+>   均已实测通过（第 7 节）。
+> - **首次取得凭据**：浏览器完成官方登录后，从 Cookie 里取 `operationToken` 粘进管理台即可
+>   （它形如 `<租户>:<accessToken>`，冒号后段就是 access token），详见 2.2。
+> - **⚠ 自动续期在容器内不可行**（2026-11-21 实测）：服务端只接受官方桌面客户端发出的
+>   换发请求，第三方 HTTP 客户端（Node / curl / Chromium 131 均实测）一律返回
+>   `40115 session not found`。NAS 请按 **每 7 天导入一次凭据** 运维；PC 上则用
+>   `gui-companion` 模式跟随桌面版。详见 2.3。
 
 ---
 
@@ -119,71 +122,84 @@ data/TeleAgent/                       ← 挂载为容器 /data/TeleAgent
 > `TA_LOGIN_PAGE_URL` 覆盖。
 
 
-### 2.3 自动续期（登录一次后的日常运行）
+### 2.3 自动续期（⚠ 2026-11-21 实测：容器内不可行）
 
-- **协议**（官方 AuthRenewal 模块逐函数核对 + 桌面端日志旁证）：
-  `POST <网关>/superCowork/sapi/cowork/auth/token-refresh`，六个头 + 空 body，超时 10s；
-  响应 `data.accessToken` / `expiresIn` / `absoluteExpiresAt`。
-  每次成功后 TTL 重置回 7 天（桌面端日志实测 `ttl=604799s`）。
-- **⚠ 平台 Cookie 对（operToken / operationToken）是换发会话定位要素**：
-  2026-11-20 实证，官方桌面端的换发请求经 Electron net.fetch 自动携带
-  `.teleai.com.cn` 域的这对 Cookie（登录页响应 Set-Cookie 种下，明文存于
-  owner partition 的 Cookies 库）；只发六个头、不带 Cookie 会被服务器判
-  `40115 session_not_found`——**但带上 Cookie 并不保证换发成功，见本节末尾实测**。
-  TA2API 的换发已带上 Cookie，来源优先级：
-  1. 自管库 `store.json` 的 `cookies` 字段（NAS 主通道）；
-  2. PC 兼容通道：运行时从桌面端 partition Cookies 库读取（Node ≥22.13，自动回写自管库）；
-  3. 管理台「导入 Cookie」：浏览器登录页 F12 → Network → 任选一个
-     teleai.com.cn 请求 → 复制请求头完整 Cookie 粘贴。
-  换发成功后服务器 Set-Cookie 下发新一代 Cookie 对，TA2API 自动落库——**自持**。
-- **节奏**：与官方客户端一致——启动补偿 + 每 6h（`TA_RENEW_INTERVAL_MS`，默认 21600000），
-  同一自然日只尝试一次；可重试失败（网络/5xx/50005）不占用当日额度。
-- **换核**：续期成功后新 token 落库 → `authState` 热替换 → 走与提示词切换相同的
-  spawnAndSwap 链换核（新内核就绪后才关旧的）。
-- **终态失败**（40112~40116 / HTTP 401）：管理台亮红色横幅「请重新登录」，
-  日常运行不中断尝试。其中 `40116` 即**约 90 天的会话绝对期限**——
-  最坏情况每 90 天需要在管理台重新登录一次。
-- **完全关闭**：`TA_RENEW_INTERVAL_MS=0`（只保留管理台「手动续期」按钮）。
+**结论**：反代在容器/NAS 中**无法完成 token 换发**。服务端会拒绝一切非官方桌面
+客户端发出的换发请求，与凭据是否最新无关。NAS 部署请按「定期导入凭据」运维
+（见本节末尾），不要指望自动续期。
 
-> **⚠ 2026-11-21 实测：Cookie 齐全也可能换不了发（会话已不存在）**
->
-> 场景：容器内使用桌面版导出的凭据，`token` 与 `operationToken` 里的 accessToken
-> 逐字节相同、`deviceId` 与桌面版 `app-meta` 完全一致、**桌面版进程未运行**
-> （排除双客户端竞争）。发一次换发请求：
->
-> ```
-> http=401  code=40115  body={"code":40115,"message":"session not found"}
-> ```
->
-> 再对照三种 UA（无 UA / Electron `TeleAgent/3.1.1` / Chrome+`sec-ch-ua`），
-> 结果**完全相同**——与 UA、指纹无关。
->
-> 结论：服务端按**登录会话**判定，而不是按 Cookie 判定。Cookie（尤其 `operToken`
-> 里的 `jwtInfoId`）只是会话索引，会话本身在服务端有独立生命周期；桌面端退出登录
-> （`POST /cowork/logout`）会清掉它。
->
-> **判据**：换发 40115 但对话正常 ⇒ token 仍可用、只是续不上了。
-> 管理台会显示「自动续期失败（session_not_found）… 当前 token 仍有效至 X」，
-> 不会再误报「凭据已失效」。
->
-> **恢复方式**：重新登录一次，趁会话新鲜时立刻导入凭据，然后点一次「手动续期」
-> 验证。若仍 40115，说明该路径自续期不可用，只能按 token 到期日定期换凭据。
-- **双模式（2026-11-21）**：反代启动时自动判定部署形态，`TA_RENEW_MODE=nas|gui` 可显式覆盖：
-  - **nas**（默认，NAS/容器独占）：上文的换发闭环全功能启用——这是 NAS 部署的正常形态。
-  - **gui-companion**（PC 上自动检测到桌面版数据目录 `Local State` 时）：
-    换发**整体停用**（连启动补偿都不发）。原因：同一账号下桌面版与反代都换发会
-    互相挤掉对方的会话（服务器把换发会话绑定给「最后一次成功换发的客户端」，
-    实测即使带上实时读取的 Cookie 对，PC 上换发仍被判 `session_not_found`）。
-    PC 上桌面版本来就是权威换发者（启动补偿 + 6h 定时器，日志实证每日成功），
-    反代退居跟随者：凭据以桌面版 `token.json`（DPAPI）为权威，watcher 每 60s
-    检测其更新、按 JWT `iat`「谁新用谁」采用并热换核——桌面版换发后反代无感跟随，
-    与手动重启等效。管理台「手动续期」在此模式下禁用并说明原因。
-  - 例外：PC 上想让反代独占换发（如桌面版长期不在线），设 `TA_RENEW_MODE=nas`
-    并自担双客户端竞争风险。
-- **双客户端竞争**：同一账号同时跑桌面端与 TA2API 时，两边的成功换发都会使对方
-  手里的 token 变为上一代（服务器轮转 + 吊销宽限）。PC 上二选一：要么桌面端
-  换发（gui-companion 模式自动如此），要么 TA2API 独占换发（`TA_RENEW_MODE=nas`）。
-  NAS 部署天然无此问题。
+#### 实测证据
+
+| 步骤 | 结果 |
+|---|---|
+| 桌面版启动补偿换发 | ✅ `token-refresh succeeded ttl=604798s` |
+| 同一会话再换一次（清 `renewal-schedule.json` 后重启桌面版） | ✅ `succeeded ttl=604799s` —— 会话**可重复使用**，非一次性消费 |
+| 用桌面版换发**产出**的最新凭据，Node fetch 重放 | ❌ `401 40115 session not found` |
+| 同上，curl 8.21（Schannel TLS 栈） | ❌ 40115 |
+| 同上，Edge / Chromium 131（Playwright，页面内同源 fetch + 注入 Cookie） | ❌ 40115 |
+| 换 `X-App-Version`：`3.1.1.000` / `3.1.1` / 空 | ❌ 全 40115 |
+| 换 `deviceId`：`e8b0c51f3439`（WLAN MAC 去分隔符小写） / `56c55713-…`（`desktop-device-id.json`） | ❌ 全 40115 |
+| 换 UA（无 / Electron TeleAgent / Chrome+sec-ch-ua）、加 `Origin`+`Referer`、Cookie 反序、Accept 族 | ❌ 全 40115 |
+
+已排除：凭据过期、Cookie 未轮转、`deviceId` 错误、版本号/UA 不匹配、双客户端竞争、
+会话一次性消费。**唯一剩余解释**：服务端按客户端的 TLS/HTTP 栈特征识别身份
+（最可能是 JA4 指纹——Electron 32 用的是 Chromium 128，Edge 131 也不匹配），
+第三方 HTTP 客户端一律不认。
+
+旁证：`operToken` 的 `jwtInfoId` 每次换发都会变（旧值随即失效），说明服务端确实
+维护着会话状态；但仅凭这条索引无法冒充客户端。
+
+#### NAS 怎么办
+
+**方案 A（推荐）：容器 + 每 7 天导入一次凭据**
+
+token TTL 为 7 天。在任意装有桌面版的 PC 上（桌面版需已登录、并**先退出**
+—— Cookie 库是独占锁，运行中读不了）：
+
+```bash
+node docker/export-credentials.mjs docker/ta-export
+```
+
+两种方式落地到 NAS：
+- 拷 `docker/ta-export/credentials/*.json` 到 NAS 的 `data/runtime/credentials/`；
+- 或在管理台「用 Cookie 登录」直接粘贴 `operationToken`（更省事，不用拷文件）。
+
+判据：管理台顶部显示 token 到期时间，剩余 2 天以内就该更新。
+
+**方案 B：PC 上跑反代（gui-companion）**
+
+反代检测到桌面版数据目录（`Local State`）时自动进入该模式：换发整体停用，
+改为**跟随**桌面版的 token 更新（每 60s 比对 `token.json` 指纹，按 JWT `iat`
+「谁新用谁」）。这是 PC 场景的正确形态，也是目前唯一能长期免维护的用法。
+
+**方案 C（不推荐）：容器内跑官方 Electron 客户端本体**
+
+理论可行（换发需要它的网络栈），但镜像 +1GB、需要图形栈，且与「用内核做反代」
+的初衷冲突。
+
+#### 实现保留（PC 场景与将来参考）
+
+以下能力仍保留，gui-companion 之外或官方将来放开时会用到：
+
+- **协议**：`POST <网关>/superCowork/sapi/cowork/auth/token-refresh`，六个头 + 空 body，
+  超时 10s；响应 `data.accessToken` / `expiresIn` / `absoluteExpiresAt`。与官方
+  `AuthRenewal.$St()` 逐函数核对一致（含 `X-Nonce` 用 UUID、`X-Timestamp` 用秒）。
+- **Cookie 来源优先级**：`store.json` → 桌面版 partition Cookies（Node ≥22.13，
+  自动回写自管库）→ 管理台「导入 Cookie」。
+- **节奏**：启动补偿 + 每 6h（`TA_RENEW_INTERVAL_MS`，默认 21600000），
+  同一自然日只尝试一次；可重试失败不占用当日额度。`0` = 完全关闭。
+- **换核**：成功后新 token 落库 → `authState` 热替换 → `spawnAndSwap` 热换。
+- **终态失败**（40112~40116）：管理台提示「自动续期失败（<category>）」，
+  **不再误报 token 失效**——若 token 仍有效会明确写出到期时间。
+- **双模式**：`TA_RENEW_MODE=nas|gui` 可显式覆盖自动判定。
+
+#### 排障：40115 怎么读
+
+| 现象 | 含义 |
+|---|---|
+| 对话正常 + 续期 40115 | token 还能用、只是续不上——**容器内属常态**，按方案 A 定期导入即可 |
+| 对话也 401 | token 真过期了，重新导入凭据 |
+
 
 ### 2.4 可选：PC 离线迁移（不想在 NAS 上做首次登录）
 
@@ -242,7 +258,7 @@ Dockerfile 只 `COPY` 与构建架构同名的那一个文件。
 | 局域网访问（`TA_HOST=0.0.0.0`） | `server.mjs` createShim 传 `host`；shim 原生支持 |
 | 内核看门狗 + 存活检查 + 先起后换 | `server.mjs`（`TA_WATCHDOG_MS`） |
 | 自管凭据库（明文 token，无 DPAPI 依赖） | `lib/credentials.mjs` + `server.mjs` 启动降级链 |
-| 官方 token-refresh 自续期 | `lib/credentials.mjs`（协议复刻，离线单测 22 项） |
+| 官方 token-refresh 自续期 | `lib/credentials.mjs`（协议复刻，离线单测 28 项）—— ⚠ 容器内服务端会拒绝，见 2.3 |
 | 管理台登录（iframe postMessage / 粘贴回跳） | `web/admin.html` + `/admin/api/auth/*` |
 | 管理台远程访问 | `TA_ADMIN_ALLOW_REMOTE=1` + 强制 `TA_ADMIN_TOKEN` |
 
@@ -371,10 +387,10 @@ curl -s http://NAS_IP:8787/admin/api/auth -H "x-admin-token: $TA_ADMIN_TOKEN"
 | 内核自愈 | 容器内 `kill -9` 内核 → **+11s** 自动重启，`/healthz` 端口刷新，随后对话 200 |
 | 持久化 | `data/runtime/` 下 `teleagent.db`、`api-keys.json`、`credentials/`、内核日志均在卷内；容器重启后凭据与 `generation` 不变 |
 
-**未验证（需首次部署时确认）**
-- **真实网关的 token-refresh 调用**（协议与官方客户端逐字节一致，但按风控纪律，
-  未经明确同意不向生产网关发测试请求——首次部署登录后的第一次自动续期即真实验证）。
-  本次容器实测刻意设 `TA_RENEW_INTERVAL_MS=0`，避免与同机桌面版抢同一换发会话（40115）。
+**已验证的负面结论（2026-11-21，实打实做过）**
+- **容器内换发不可行**：桌面版能连续两次换发成功，而拿它换发产出的最新凭据
+  （token / operToken / deviceId / 各项头部全部核对过）在 Node fetch、curl、
+  Chromium 131 上重放均 `40115`。详见 2.3 的完整对照表。
 - ~~浏览器独立登录拿 token~~ —— 已证伪并放弃：桌面端 OAuth 链授权后回执页只有 `code`、
   且立刻唤起 `teleagent://`；code 在浏览器加载那一刻即失效（重放 400 get token error）。
   现改为「网页版登录 → 复制平台 Cookie → 管理台导入」，见 2.2 节。

@@ -1149,7 +1149,8 @@ curl http://127.0.0.1:8787/v1/chat/completions \
     $a('authRenewBtn').disabled = guiMode;
     $a('authRenewBtn').title = guiMode
       ? '桌面版已接管换发，反代自动跟随其 token 更新。如需反代独占换发，设环境变量 TA_RENEW_MODE=nas 并重启'
-      : '';
+      : '实测：容器内换发会被服务端拒绝（40115 session not found），因为服务端只认官方桌面客户端的网络栈。'
+        + '点击不会损坏任何东西，但预期会失败；建议按 token 到期时间重新导入凭据。';
     var banner = $a('authBanner');
     if (st.needLogin) {
       // 续期失败 ≠ token 失效：session_not_found 只说明换发会话找不到，
@@ -1159,6 +1160,12 @@ curl http://127.0.0.1:8787/v1/chat/completions \
         ? '⚠ ' + st.needLogin + '。当前 token 仍有效至 ' + fmtTs(st.tokenExpiresAt) +
           '，对话请求不受影响；到期后无法自动续期，届时需重新登录。'
         : '⚠ ' + st.needLogin + '：点「登录账号」完成一次登录即可恢复';
+      banner.style.display = '';
+    } else if (st.tokenExpiresAt && st.tokenExpiresAt - Date.now() < 2 * 86400000 && !guiMode) {
+      // 容器内换发不可用 → token 到期就是硬截止，提前两天提醒
+      banner.textContent =
+        '⏳ token 将于 ' + fmtTs(st.tokenExpiresAt) +
+        ' 到期。容器内无法自动续期，请在此之前重新导入凭据（桌面版登录后导出，或粘贴 operationToken）。';
       banner.style.display = '';
     } else if (st.absoluteExpiresAt && st.absoluteExpiresAt - Date.now() < 7 * 86400000 && !guiMode) {
       banner.textContent = '⚠ 会话将在 ' + fmtTs(st.absoluteExpiresAt) + ' 前后到期（会话绝对期限），届时需重新登录';
@@ -1180,7 +1187,8 @@ curl http://127.0.0.1:8787/v1/chat/completions \
     row.innerHTML = guiMode
       ? '换发 Cookie：桌面版负责换发，反代不需要（仅 NAS 模式使用）'
       : hasCookie
-        ? '换发 Cookie：<b>已就绪</b>（' + esc(names.join('、')) + '）——续期可完全自动'
+        ? '换发 Cookie：<b>已就绪</b>（' + esc(names.join('、')) + '）——但换发能否成功取决于服务端是否认这个客户端，' +
+          '<b>容器内实测会被拒（40115）</b>，届时按 token 到期时间重新导入凭据即可'
         : '换发 Cookie：<b style="color:#e5484d">缺失</b>——自动续期会报 40115 session_not_found，请在下方导入';
     // Cookie 是登录主通道：无论 gui/nas 都常驻（gui 模式下它只用于登录，不用于换发）
     $a('cookieImportBox').style.display = '';
