@@ -157,18 +157,26 @@ NAS 端启动即用，后续续期照常（`generation` 会从 1 开始递增）
 
 ## 3. 准备 Linux 内核载荷
 
-从两个 deb 里提取 `super-agent-code-linux-*.tar.gz`（Windows 上可用随附脚本，
-或在任意有 Python 的机器按 `docker/DEB_ANALYSIS.txt` 第二节手工提取）。
-放到 NAS 的 `docker/ta2api/payload/`：
+随附提取脚本 `docker/extract-payload.py`（纯标准库，流式处理，不落 500MB 中间文件）：
+
+```bash
+# amd64（x86_64 NAS / PC）
+python3 docker/extract-payload.py ~/Downloads/TeleAgent-3.1.1-amd64.deb amd64
+# arm64（ARM NAS）
+python3 docker/extract-payload.py ~/Downloads/TeleAgent-3.1.1-arm64.deb arm64
+```
+
+脚本自带 sha256 校验（amd64 应为 `26f1008b4066c45a1eb5f193261d5aa78f1b4a5dab3c7040d924ec66c4c11b40`），
+输出直接落到 `docker/payload/`：
 
 ```
 payload/
-├── TeleAgent-linux-amd64       （x64 内核，从 super-agent-code-linux-x64.tar.gz 解出，改名）
-├── TeleAgent-linux-arm64       （arm64 内核，从对应包解出，改名）
-└── SHA256SUMS                  （写入第 6 节给出的校验值）
+├── TeleAgent-linux-amd64       （48,300,194 字节，3.1.1）
+└── TeleAgent-linux-arm64       （arm64 机器上从 arm64 包提取）
 ```
 
-两架构二进制都是静态的，不需要任何 `.so`。
+两架构二进制都是静态的，不需要任何 `.so`。**只需提取你要部署的那个架构**——
+Dockerfile 只 `COPY` 与构建架构同名的那一个文件。
 
 ---
 
@@ -258,12 +266,21 @@ curl -s http://NAS_IP:8787/admin/api/auth -H "x-admin-token: $TA_ADMIN_TOKEN"
 把反代拉起的内核一起杀掉）。旧版 `server.mjs` 的缺陷会让一次猝死变成永久故障。
 现已改为：
 
-- 每次请求先判 `proc.exitCode`，死了就按同一 key 自动重启；
+- 每次请求先判内核存活，死了就按同一 key 自动重启；
 - 切换顺序「先起新的 → `waitReady` → 再关旧的」，中途失败不留空窗；
 - 切换与重启串行化，避免并发请求互相杀掉对方正在预热的内核；
 - 看门狗每 `TA_WATCHDOG_MS`（默认 15000ms）检查一次，空闲时内核死了也会自己起来。
 
-> 实测：手动 `taskkill` 掉内核后约 28 秒自动复活并刷新 `/healthz` 的内核端口。
+> **Linux 专有陷阱（2026-11-21 Docker 实测抓到并已修）**：进程被**信号**杀死
+> （`SIGKILL` / OOM killer / `SIGSEGV`）时，Node 只设 `proc.signalCode`，
+> `proc.exitCode` **保持 null**。旧判据 `proc.exitCode !== null` 在 Linux 容器里
+> 会把死进程判成活的 → 看门狗永不触发、所有请求毫秒级 `fetch failed`，
+> 表现为「容器在跑但完全不可用」。Windows 因 TerminateProcess 有退出码而从未暴露。
+> 现判据：`exitCode !== null || signalCode != null`（`server.mjs` `kernelDead()`、
+> `lib/kernel.mjs` `waitReady()`）。
+
+> 实测：Windows 上 `taskkill` 掉内核后约 28 秒自动复活；Linux 容器内
+> `kill -9` 后 **+11 秒**复活并刷新 `/healthz` 的内核端口。
 > Docker 的 `restart: unless-stopped` 只管外层进程，内层内核由看门狗负责。
 
 ---
@@ -274,21 +291,39 @@ curl -s http://NAS_IP:8787/admin/api/auth -H "x-admin-token: $TA_ADMIN_TOKEN"
 - deb 结构、内核静态属性、两架构 sha256（`docker/DEB_ANALYSIS.txt`）。
 - 换发协议：app.asar 主进程 AuthRenewal 模块逐函数提取（`kNe/FEt/OEt/aI`），
   与桌面端运行日志（11-16~11-20 每日 `token-refresh succeeded ttl=604799s`）互相印证。
-- 凭据模块离线单测 **22/22**（`npm run test:credentials`，全部请求打在本机 mock 网关）：
+- 凭据模块离线单测 **28/28**（`npm run test:credentials`，全部请求打在本机 mock 网关）：
   请求头/空 body/URL、五类终态业务码、50005/5xx 重试、404 unsupported、超时、
   存储原子写、设备身份生成与持久化、当日去重、禁用语义。
 - 冒烟启动：`TA_RENEW_INTERVAL_MS=0` 下第二实例正常拉起内核，
   `/admin/api/auth` 返回完整状态（未向生产网关发任何请求）。
 - 三协议工具回归 26/26（`npm run test:tools`）。
 
+**已验证（2026-11-21 本机 Docker Desktop 4.99 / Engine 29.9.3，linux/amd64 真实容器）**
+
+| 项目 | 结果 |
+| --- | --- |
+| 镜像构建 | 成功；上下文 48.5MB（`.dockerignore` 生效，未把 `reverse/` 564MB 与凭据打进上下文）；镜像内内核 sha256 与提取物一致 |
+| 容器启动 | 内核 3.1.1 在容器内就绪，模型目录 `chat-pro / chat-flagship / chat-flash` 全部加载 |
+| 凭据加载 | `source=credentials`（`store.json`），`platformCookies: operToken+operationToken=true` |
+| OpenAI `POST /v1/chat/completions` | 200，2.0s，真实回复（非流式 + 流式 SSE 增量均正常） |
+| Responses `POST /v1/responses` | 200，`object=response`，`output_text` 正常 |
+| Anthropic `POST /v1/messages` | 200，`content[0].type=text`，`stop_reason=end_turn` |
+| 工具中继（OpenAI tools） | 第一轮 `finish_reason=tool_calls`，函数名/参数原样回传；第二轮回灌 `role:tool` 后 `finish_reason=stop`，模型用「26℃ 多云」作答——**闭环成立** |
+| 鉴权 | 业务端点无 key → 401；`/v1/models`、`/healthz` 为公开端点（网关惯例） |
+| 管理台 | `/admin` 55KB 页面正常；`/admin/api/auth` 返回完整状态；无 token / 错 token 均 403（容器内来源非回环，`TA_ADMIN_ALLOW_REMOTE=1` 下强制令牌） |
+| 局域网访问 | 宿主 LAN IP 访问 `8787` 正常（`TA_HOST=0.0.0.0` 生效） |
+| 内核自愈 | 容器内 `kill -9` 内核 → **+11s** 自动重启，`/healthz` 端口刷新，随后对话 200 |
+| 持久化 | `data/runtime/` 下 `teleagent.db`、`api-keys.json`、`credentials/`、内核日志均在卷内；容器重启后凭据与 `generation` 不变 |
+
 **未验证（需首次部署时确认）**
-- 容器内端到端对话（Windows 本机无法执行 Linux ELF）。
 - **真实网关的 token-refresh 调用**（协议与官方客户端逐字节一致，但按风控纪律，
   未经明确同意不向生产网关发测试请求——首次部署登录后的第一次自动续期即真实验证）。
+  本次容器实测刻意设 `TA_RENEW_INTERVAL_MS=0`，避免与同机桌面版抢同一换发会话（40115）。
 - 登录页 iframe 的 `postMessage` 回传通道（依据官方 Web 登录壳同机制推断 + 桌面端
   注入脚本逆向；备用「粘贴回跳网址」通道不依赖它）。
 - `ghcr.io/ghg6666678/ta2api` 镜像是否存在（gh 无 `read:packages` scope）；
   本文走本地构建，不依赖 GHCR。
+- ARM64 容器实跑（本机为 x86_64；arm64 内核只做了 ELF 头鉴定与 sha256 核对）。
 
 ---
 
@@ -308,6 +343,13 @@ curl -s http://NAS_IP:8787/admin/api/auth -H "x-admin-token: $TA_ADMIN_TOKEN"
    `reverse/teleagent-kernel/CONCURRENCY_AND_SESSION_FAILURES.txt`）与部署无关，
    多客户端并发时注意显式传会话 id。
 6. **首次启动耗时。** 内核首次启动约 1–2 分钟，健康检查别设太短。
+7. **跨协议调用会重启内核。** 内核的 agent 提示词要跟调用方一致（OpenAI 客户端 / Codex 风格 /
+   Claude 风格各一套），所以 chat → responses → messages 交替调用时每次都换核。实测
+   6 次交替请求触发 **5 次重启**（每次 1–2s，且会清空挂起会话）。NAS 上建议**同类客户端为主**；
+   多协议混跑时请显式传 `user`/`conversation_id` 区分会话，并接受切换开销。
+8. **挂起工具调用的残留。** 若上一轮工具调用被客户端中途放弃（超时/断连），其挂起项会留在
+   bridge 里，下轮 `resolve()` 会给它回空字符串；换个协议的客户端可能看到一次「无意义重试」。
+   实战中新建会话即可，不影响正确性。
 
 ---
 
@@ -316,8 +358,56 @@ curl -s http://NAS_IP:8787/admin/api/auth -H "x-admin-token: $TA_ADMIN_TOKEN"
 | 项目 | docs/nas-docker.md (v0.7.5 设计) | 本文（2026-11-20 实际） |
 | --- | --- | --- |
 | 凭据 | PC 导出主密钥 → Linux 解密（依赖 PC） | 管理台登录 + 自管凭据库，PC 仅可选迁移 |
-| 续期 | renew 容器（设计） | 官方 token-refresh 协议复刻，每 6h 自动，离线单测 22 项 |
+| 续期 | renew 容器（设计） | 官方 token-refresh 协议复刻，每 6h 自动，离线单测 28 项 |
 | 局域网访问 | `TA_ADMIN_ALLOW_REMOTE=1`（当时不存在） | `TA_HOST` 内置 + `TA_ADMIN_ALLOW_REMOTE`（已实现，远程强制令牌） |
 | 镜像 | GHCR 多架构清单（未验证存在） | 本地构建，TARGETARCH 选内核 |
-| 内核自愈 | 无 | 看门狗 + 存活检查 + 先起后换（实测 28s 复活） |
+| 内核自愈 | 无 | 看门狗 + 存活检查 + 先起后换（实测 Windows 28s / Linux 11s 复活） |
 | Python/Node/ripgrep | 从 Release 载荷下载 | 容器只需 Node；内核静态，其余不需要 |
+
+---
+
+## 10. 常见故障（实测踩坑）
+
+### 10.1 Windows 上 `docker` 命令不存在 / `docker-credential-desktop` 找不到
+
+Docker Desktop 装在用户目录时不会写系统 PATH：
+
+```powershell
+$bin = "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin"
+$env:PATH = "$bin;$env:PATH"
+docker version
+```
+
+`error getting credentials - exec: "docker-credential-desktop": executable file not found`
+是同一个原因（`~/.docker/config.json` 里的 `credsStore: desktop` 需要该助手在 PATH 里）。
+
+### 10.2 构建报 `COPY docker/payload/TeleAgent-linux- failed`
+
+两种可能：
+
+1. `payload/` 里没有对应架构的文件 → 跑第 3 节的 `extract-payload.py`。
+2. **`TARGETARCH` 被传成空值**。compose 里若写 `args: TARGETARCH: ${TA_ARCH:-}`，
+   `.env` 没设 `TA_ARCH` 时会把 BuildKit 自动注入的架构覆盖成空字符串 → COPY 找不到文件。
+   本仓库的 compose 已删掉该行，改用 BuildKit 自动架构；交叉构建请用
+   `docker buildx build --platform linux/arm64 ...`。
+
+### 10.3 容器 `Up` 但所有请求 `502 fetch failed`，且日志无新内容
+
+内核已死但代理没察觉。2026-11-21 前的版本在 Linux 上必现（信号退出判据缺陷，
+见 6.1）。确认并升级：
+
+```bash
+docker compose build --no-cache && docker compose up -d
+docker exec ta2api sh -c 'for d in /proc/[0-9]*; do tr "\0" " " < $d/cmdline; echo; done' | grep TeleAgent
+```
+
+### 10.4 `[entrypoint] 缺少 /data/TeleAgent` 后容器退出
+
+`data/TeleAgent/` 里必须有 `current-owner.json`（第 2.1 节）。空目录不算——
+入口脚本据此判断「是否已完成账号配置」，避免起一个必然失败的内核。
+
+### 10.5 管理台在本机打不开 / 打开 403
+
+容器内看到的来源是 Docker 网关地址，不是回环，因此走「远程」分支：
+必须 `TA_ADMIN_ALLOW_REMOTE=1` **且**带 `?token=<TA_ADMIN_TOKEN>`（compose 已默认开启）。
+只想本机用可直接 `docker exec` 进容器 `curl 127.0.0.1:8787/admin`。

@@ -1,0 +1,41 @@
+# 构建上下文 = 仓库根。只放行运行必需项，其余全部排除，避免把凭据/逆向产物打进上下文。
+# 注意：docker/payload/ 必须保留（Dockerfile 要 COPY 内核）。
+
+# --- 凭据与运行态（绝对不能进镜像）---
+local.secrets.json
+runtime/
+*.bak
+*.bak-*
+docker/.env
+docker/gateway_key.txt
+docker/data/
+docker/ta-export/
+docker/export/
+ta-export/
+
+# --- 逆向/提取产物（体积巨大）---
+reverse/
+
+# --- 版本控制与文档（运行不需要）---
+.git/
+.gitignore
+.gitattributes
+docs/
+examples/
+README.md
+CHANGELOG.md
+LICENSE
+
+# --- 通用噪音 ---
+node_modules/
+**/node_modules/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc
+
+# --- 本机脚本（容器内不用）---
+start.cmd
+open-console.cmd

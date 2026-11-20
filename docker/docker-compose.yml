@@ -3,9 +3,9 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-      args:
-        # 可选：构建机 TARGETARCH 未注入时手动指定 amd64 / arm64
-        TARGETARCH: ${TA_ARCH:-}
+      # 架构由 BuildKit 自动注入的 TARGETARCH 决定（amd64 / arm64），无需手动传参。
+      # 交叉构建请用：docker buildx build --platform linux/arm64 -f docker/Dockerfile ..
+      # 注意：不要在这里传 args.TARGETARCH=${TA_ARCH:-}——空值会覆盖自动架构，导致 COPY 找不到内核。
     image: ta2api:local
     container_name: ta2api
     restart: unless-stopped
@@ -20,9 +20,12 @@ services:
       TA_LOGIN_PAGE_URL: "${TA_LOGIN_PAGE_URL:-}"
       TA_GATEWAY_KEY_FILE: /run/secrets/gateway_key
       TA_DATA_ROOT: /data
-      # 看门狗与自续期
-      TA_WATCHDOG_MS: "15000"
-      TA_RENEW_INTERVAL_MS: "21600000"        # 6h；同一天只尝试一次（与官方客户端一致）。0 = 关闭自动续期
+      # 看门狗与自续期（均可由 .env 覆盖）
+      TA_WATCHDOG_MS: "${TA_WATCHDOG_MS:-15000}"
+      # 默认 6h，同一天只尝试一次（与官方客户端一致）。0 = 关闭自动续期
+      TA_RENEW_INTERVAL_MS: "${TA_RENEW_INTERVAL_MS:-21600000}"
+      # auto / nas / gui。容器内无桌面版数据目录 → 自动判 nas；本机与桌面版并存时设 gui 避免双客户端竞争
+      TA_RENEW_MODE: "${TA_RENEW_MODE:-auto}"
     secrets:
       - gateway_key
     ports:

@@ -187,7 +187,12 @@ let switchChain = Promise.resolve();
  * 只是每一次请求都会毫秒级 `fetch failed`。所以「同 key 直接复用」必须加存活判断。
  */
 function kernelDead() {
-  return !kernel?.proc || kernel.proc.exitCode !== null;
+  const p = kernel?.proc;
+  if (!p) return true;
+  // 注意：被信号杀死（SIGKILL/SIGSEGV，Linux 容器里 OOM 常见）时 Node 只设
+  // `signalCode`，`exitCode` 仍为 null。只看 exitCode 会把死进程当活的，
+  // 于是看门狗不触发、请求全部毫秒级 fetch failed（2026-11-21 Docker 实测）。
+  return p.exitCode !== null || p.signalCode != null;
 }
 
 /**

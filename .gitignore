@@ -6,6 +6,13 @@ runtime-probe/
 # 本机密钥（网关 key）
 local.secrets.json
 
+# Docker 部署的本机产物（凭据 / 密钥 / 提取出的内核二进制，均不入库）
+docker/.env
+docker/gateway_key.txt
+docker/data/
+docker/ta-export/
+docker/payload/TeleAgent-linux-*
+
 # 逆向抓下来的客户端片段（不随仓库分发）
 notes/
 
