@@ -8,6 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   refreshHeaders,
+  cookieToHeader,
+  parseSetCookies,
   classifyRefresh,
   parseRefreshResponse,
   extractLoginResult,
@@ -51,6 +53,27 @@ await t('refreshHeaders 字段齐全且取值正确', () => {
   assert.equal(h['X-OS-Type'], 'Linux');
   assert.equal(h['X-SuperAgent-Device-Id'], 'dev');
   assert.equal(h['Content-Type'], 'application/json');
+  assert.equal(h['Cookie'], undefined, '无 Cookie 时不加头');
+});
+await t('refreshHeaders/cookieToHeader：Cookie 对 → 头，空值跳过', () => {
+  const h = refreshHeaders({ token: 'T', deviceId: 'd', cookie: { operToken: 'a', operationToken: 'b' } });
+  assert.equal(h['Cookie'], 'operToken=a; operationToken=b');
+  assert.equal(cookieToHeader({ operToken: 'a' }), 'operToken=a');
+  assert.equal(cookieToHeader({}), '');
+  assert.equal(cookieToHeader(null), '');
+  const h2 = refreshHeaders({ token: 'T', deviceId: 'd', cookie: 'operToken=x' });
+  assert.equal(h2['Cookie'], 'operToken=x', '字符串 Cookie 原样进头');
+});
+await t('parseSetCookies：提取 operToken/operationToken，忽略其他', () => {
+  const out = parseSetCookies([
+    'operToken=new-op; Path=/; Domain=.teleai.com.cn; Secure',
+    'operationToken=Em9xR4%3Anew-tok; Path=/; Domain=.teleai.com.cn; Secure',
+    'other=x; Path=/',
+  ]);
+  assert.deepEqual(out, { operToken: 'new-op', operationToken: 'Em9xR4%3Anew-tok' });
+  assert.equal(parseSetCookies(['a=b']), null);
+  assert.equal(parseSetCookies([]), null);
+  assert.equal(parseSetCookies(undefined), null);
 });
 await t('classifyRefresh：五个终态业务码', () => {
   for (const code of [40112, 40113, 40114, 40115, 40116]) {
@@ -139,6 +162,7 @@ const server = http.createServer((req, res) => {
     lastReq = { url: req.url, method: req.method, headers: req.headers, body: Buffer.concat(chunks).toString('utf8') };
     res.setHeader('content-type', 'application/json');
     if (mode === 'success') {
+      res.setHeader('set-cookie', ['operToken=op-next; Path=/; Domain=.teleai.com.cn', 'operationToken=Em9xR4%3Atok-next; Path=/; Domain=.teleai.com.cn']);
       res.end(JSON.stringify({ code: 0, data: { accessToken: 'tok-new', expiresIn: 604799, absoluteExpiresAt: Math.floor(Date.now() / 1000 + 90 * 86400) } }));
     } else if (mode === 'unauthorized') {
       res.statusCode = 401;
@@ -165,7 +189,7 @@ const mockBase = `http://127.0.0.1:${server.address().port}`;
 const baseArgs = { token: 'tok-old', deviceId: 'dev1', authBase: mockBase, appVersion: '3.1.1.000', osType: 'linux' };
 
 await t('成功换发：POST 空 body + 全套头 + 结果字段', async () => {
-  const r = await refreshToken(baseArgs);
+  const r = await refreshToken({ ...baseArgs, cookie: { operToken: 'op-old', operationToken: 'Em9xR4%3Atok-old' } });
   assert.equal(r.status, 'succeeded');
   assert.equal(r.token, 'tok-new');
   assert.equal(r.expiresIn, 604799);
@@ -176,6 +200,8 @@ await t('成功换发：POST 空 body + 全套头 + 结果字段', async () => {
   assert.equal(lastReq.headers['x-token'], 'tok-old');
   assert.equal(lastReq.headers['x-superagent-device-id'], 'dev1');
   assert.match(lastReq.headers['x-timestamp'], /^\d{10}$/);
+  assert.equal(lastReq.headers['cookie'], 'operToken=op-old; operationToken=Em9xR4%3Atok-old', '换发必须携带平台 Cookie 对（40115 根因修复）');
+  assert.ok(Array.isArray(r.setCookies) && r.setCookies.length === 2, '结果应携带响应 Set-Cookie（自持下一代的原料）');
 });
 await t('401 → unauthorized 终态', async () => {
   mode = 'unauthorized';
@@ -218,6 +244,7 @@ let needLogin = null;
 const loop = startRenewalLoop({
   runtimeRoot: loopDir,
   getToken: () => loadCredentialStore(loopDir)?.token ?? '',
+  getCookies: async () => ({ operToken: 'op-loop', operationToken: 'Em9xR4%3Atok-loop' }),
   deviceId: 'dev1',
   authBase: mockBase,
   intervalMs: 3_600_000,
@@ -226,7 +253,7 @@ const loop = startRenewalLoop({
   onNeedLogin: (r) => { needLogin = r; },
   fetchImpl: globalThis.fetch,
 });
-await t('tick：首次换发成功 → 落库 + onRenewed', async () => {
+await t('tick：首次换发成功 → 落库 + onRenewed + Cookie 回写', async () => {
   saveCredentialStore(loopDir, { token: 'tok-old', generation: 0 });
   const r = await loop.tick();
   assert.equal(r.ok, true);
@@ -236,6 +263,11 @@ await t('tick：首次换发成功 → 落库 + onRenewed', async () => {
   assert.equal(s.token, 'tok-new');
   assert.equal(s.generation, 1);
   assert.ok(s.lastAttemptDay);
+  // 换发请求带了 getCookies 提供的 Cookie 对
+  assert.equal(lastReq.headers['cookie'], 'operToken=op-loop; operationToken=Em9xR4%3Atok-loop');
+  // 响应 Set-Cookie 解析后落库自持
+  assert.equal(s.cookies?.operToken, 'op-next');
+  assert.equal(s.cookies?.operationToken, 'Em9xR4%3Atok-next');
 });
 await t('tick：同一自然日去重（force 除外）', async () => {
   const r = await loop.tick();

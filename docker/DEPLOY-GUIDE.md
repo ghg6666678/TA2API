@@ -96,6 +96,17 @@ data/TeleAgent/                       ← 挂载为容器 /data/TeleAgent
   `POST <网关>/superCowork/sapi/cowork/auth/token-refresh`，六个头 + 空 body，超时 10s；
   响应 `data.accessToken` / `expiresIn` / `absoluteExpiresAt`。
   每次成功后 TTL 重置回 7 天（桌面端日志实测 `ttl=604799s`）。
+- **⚠ 平台 Cookie 对（operToken / operationToken）是换发会话定位要素**：
+  2026-11-20 实证，官方桌面端的换发请求经 Electron net.fetch 自动携带
+  `.teleai.com.cn` 域的这对 Cookie（登录页响应 Set-Cookie 种下，明文存于
+  owner partition 的 Cookies 库）；**只发六个头、不带 Cookie 会被服务器判
+  `40115 session_not_found`**（「手动续期」报「凭据已失效」就是这个原因）。
+  TA2API 的换发已带上 Cookie，来源优先级：
+  1. 自管库 `store.json` 的 `cookies` 字段（NAS 主通道）；
+  2. PC 兼容通道：运行时从桌面端 partition Cookies 库读取（Node ≥22.13，自动回写自管库）；
+  3. 管理台「导入 Cookie」：浏览器登录页 F12 → Network → 任选一个
+     teleai.com.cn 请求 → 复制请求头完整 Cookie 粘贴。
+  换发成功后服务器 Set-Cookie 下发新一代 Cookie 对，TA2API 自动落库——**自持**。
 - **节奏**：与官方客户端一致——启动补偿 + 每 6h（`TA_RENEW_INTERVAL_MS`，默认 21600000），
   同一自然日只尝试一次；可重试失败（网络/5xx/50005）不占用当日额度。
 - **换核**：续期成功后新 token 落库 → `authState` 热替换 → 走与提示词切换相同的
@@ -104,6 +115,10 @@ data/TeleAgent/                       ← 挂载为容器 /data/TeleAgent
   日常运行不中断尝试。其中 `40116` 即**约 90 天的会话绝对期限**——
   最坏情况每 90 天需要在管理台重新登录一次。
 - **完全关闭**：`TA_RENEW_INTERVAL_MS=0`（只保留管理台「手动续期」按钮）。
+- **双客户端竞争**：同一账号同时跑桌面端与 TA2API 时，两边的成功换发都会使对方
+  手里的 token 变为上一代（服务器轮转 + 吊销宽限）。PC 上建议二选一：要么桌面端
+  换发（TA2API 设 `TA_RENEW_INTERVAL_MS=0` 跟随），要么 TA2API 独占换发。
+  NAS 部署天然无此问题。
 
 ### 2.4 可选：PC 离线迁移（不想在 NAS 上做首次登录）
 
@@ -119,8 +134,11 @@ ta-export/credentials/{store.json, device.json}   → /app/runtime/credentials/
 ta-export/TeleAgent-layout/…                      → /data/TeleAgent/
 ```
 
-`store.json` 含明文 token（等同账号凭据）：权限 600、不进 git、不外传。
+`store.json` 含明文 token 与平台 Cookie 对（等同账号凭据）：权限 600、不进 git、不外传。
 NAS 端启动即用，后续续期照常（`generation` 会从 1 开始递增）。
+导出脚本会一并提取 owner partition 的 `operToken`/`operationToken` Cookie——
+这是换发会话定位要素（见 2.3）；若导出时提示 Cookie 失败，NAS 端在管理台
+「导入 Cookie」补录即可。
 `device.json` 与 PC 端同身份——token 与设备标识保持配对，与官方客户端行为一致。
 
 ---

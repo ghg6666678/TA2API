@@ -9,7 +9,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { resolveOwner, accountDir, tokenFile, readJson, kernelVersion, ensureTeleAgentLayout, LOCAL_STATE_FILE } from './lib/paths.mjs';
+import { resolveOwner, accountDir, tokenFile, readJson, kernelVersion, ensureTeleAgentLayout, LOCAL_STATE_FILE, DEVICE_DATA_ROOT } from './lib/paths.mjs';
 import { loadAuthState, deviceMeta, parseJwt } from './lib/auth.mjs';
 import {
   ensureDeviceIdentity,
@@ -18,6 +18,8 @@ import {
   startRenewalLoop,
   extractLoginResult,
   jwtExpiresAt,
+  readPlatformCookies,
+  parseSetCookies,
 } from './lib/credentials.mjs';
 import { startKernel, NEUTRAL_AGENT_PROMPT } from './lib/kernel.mjs';
 import { createToolBridge } from './lib/toolbridge.mjs';
@@ -267,12 +269,38 @@ let authStatus = {
   needLogin: authState.token ? null : '尚未登录',
 };
 
+/**
+ * 换发会话 Cookie 对（operToken/operationToken）——2026-11-20 实证：只发 X-Token 不带这对
+ * Cookie 会被服务器判 40115 session_not_found（桌面端 Electron net.fetch 自动携带）。
+ * 优先级：自管库（NAS 主通道）> 桌面端 partition Cookies 库（PC 兼容通道，每次重读——
+ * 桌面版每次换发都会刷新它）。读到后回写自管库，PC 下次启动不再依赖 partition。
+ */
+let cookiesCache = storedCredentials?.cookies ?? null;
+async function cookieForRenewal() {
+  if (cookiesCache?.operToken || cookiesCache?.operationToken) return cookiesCache;
+  try {
+    const owner = resolveOwner();
+    const fromDb = await readPlatformCookies({ deviceDataRoot: DEVICE_DATA_ROOT, ownerDir: owner.ownerDir });
+    if (fromDb) {
+      cookiesCache = fromDb;
+      saveCredentialStore(runtimeRoot, { cookies: fromDb });
+      console.log('[teleagent] 已从桌面端 partition 读取平台 Cookie 对（换发会话要素）');
+      return fromDb;
+    }
+  } catch {
+    // 未登录桌面通道（NAS）或读取失败：静默降级，换发仍会尝试（可能 40115）
+  }
+  return null;
+}
+
 const renewal = startRenewalLoop({
   runtimeRoot,
   deviceId: authState.deviceId,
   getToken: () => authState.token,
+  getCookies: cookieForRenewal,
   onRenewed: ({ token, expiresIn, absoluteExpiresAt, generation }) => {
     authState.token = token; // startKernel 被调用时才读 authState → 之后任何 spawn/换核都带上新 token
+    cookiesCache = loadCredentialStore(runtimeRoot)?.cookies ?? cookiesCache;
     authStatus = {
       ...authStatus,
       source: 'credentials',
@@ -332,7 +360,48 @@ async function handleAdminLogin(rawUrl) {
       next.tokenExpiresAt ? new Date(next.tokenExpiresAt).toLocaleString() : '未知'
     }`,
   );
-  return { ok: true, generation: next.generation, tokenExpiresAt: next.tokenExpiresAt };
+  return {
+    ok: true,
+    generation: next.generation,
+    tokenExpiresAt: next.tokenExpiresAt,
+    // iframe 登录拿不到跨域 Cookie——换发还需要这对 Cookie，否则下次续期会 40115
+    cookieHint: cookiesCache?.operToken || cookiesCache?.operationToken
+      ? null
+      : '换发还需要平台 Cookie 对：请在浏览器登录页按 F12 → Network → 任选一个 teleai.com.cn 请求 → 复制请求头里的完整 Cookie，粘贴到管理台「导入 Cookie」框',
+  };
+}
+
+/** 管理台导入 Cookie 对：粘贴浏览器登录页的 Cookie 头（operToken=...; operationToken=...）。 */
+function parseCookieHeader(raw) {
+  const out = {};
+  for (const part of String(raw).split(';')) {
+    const eq = part.indexOf('=');
+    if (eq <= 0) continue;
+    const name = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if ((name === 'operToken' || name === 'operationToken') && value) out[name] = value;
+  }
+  return out;
+}
+function handleCookieImport(raw) {
+  const parsed = parseCookieHeader(raw);
+  if (!parsed.operToken && !parsed.operationToken) {
+    return {
+      ok: false,
+      error: '未找到 operToken / operationToken：请在登录页（teleai.com.cn 域）的请求头里复制完整 Cookie 再试',
+    };
+  }
+  cookiesCache = { ...(cookiesCache ?? {}), ...parsed };
+  const next = saveCredentialStore(runtimeRoot, { cookies: cookiesCache });
+  storedCredentials = next;
+  return { ok: true, imported: Object.keys(parsed), cookies: cookieStatus() };
+}
+function cookieStatus() {
+  return {
+    operToken: Boolean(cookiesCache?.operToken),
+    operationToken: Boolean(cookiesCache?.operationToken),
+    source: cookiesCache ? 'store' : null,
+  };
 }
 
 const shim = await createShim({
@@ -352,11 +421,14 @@ const shim = await createShim({
       // deviceId/installId 是设备标识不是凭据，管理台展示用
       deviceId: authState.deviceId,
       installId: authState.installId,
+      // 换发会话 Cookie 对的存在性（不回显值）：NAS 判断「能否自续期」的关键指标
+      platformCookies: cookieStatus(),
       // 官方登录页地址：环境变量 TA_LOGIN_PAGE_URL 配置（见 docker/DEPLOY-GUIDE.md）。
       // 未配置时管理台仍可用「粘贴回跳网址」通道完成登录。
       loginPageUrl: process.env.TA_LOGIN_PAGE_URL || null,
     }),
     login: handleAdminLogin,
+    setCookies: handleCookieImport,
     renew: () => renewal.tick(true),
   },
   port: Number(process.env.TA_PORT || 8787),

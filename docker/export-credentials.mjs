@@ -74,7 +74,28 @@ const payload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString(
 const daysLeft = Math.round((payload.exp * 1000 - Date.now()) / 86400000);
 if (!(daysLeft > 0)) throw new Error('导出的 token 已过期，请在 PC 上重新登录桌面端');
 
-// 3) 写 TA2API 自管凭据库格式（不导出主密钥本身——NAS 端不再需要 DPAPI）
+// 3.5) 平台 Cookie 对（operToken/operationToken）——2026-11-20 实证：换发请求缺这对
+//      Cookie 会被服务器判 40115 session_not_found。明文存于 owner partition 的
+//      Cookies SQLite（Electron net.fetch 会话）。随 store.json 一并导出。
+let cookies = null;
+try {
+  const cookiesDb = path.join(DATA, 'Partitions', `owner%3A${ownerDir}`, 'Network', 'Cookies');
+  if (fs.existsSync(cookiesDb)) {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(cookiesDb, { readOnly: true });
+    const rows = db
+      .prepare("SELECT name, value FROM cookies WHERE host_key LIKE '%teleai.com.cn' AND name IN ('operToken','operationToken')")
+      .all();
+    db.close();
+    const c = {};
+    for (const r of rows) if (r.value && r.value.trim()) c[r.name] = r.value.trim();
+    if (c.operToken || c.operationToken) cookies = c;
+  }
+} catch (err) {
+  console.warn(`警告：Cookie 导出失败（${err.message}）。NAS 端可在管理台「导入 Cookie」补录，否则自动续期将报 40115。`);
+}
+
+// 4) 写 TA2API 自管凭据库格式（不导出主密钥本身——NAS 端不再需要 DPAPI）
 const meta = JSON.parse(fs.readFileSync(srcMeta, 'utf8'));
 const store = {
   token: jwt,
@@ -83,6 +104,7 @@ const store = {
   absoluteExpiresAt: null,
   generation: 1,
   source: 'pc-export',
+  ...(cookies ? { cookies } : {}),
 };
 fs.writeFileSync(path.join(out, 'credentials', 'store.json'), JSON.stringify(store, null, 2), { mode: 0o600 });
 fs.writeFileSync(path.join(out, 'credentials', 'device.json'), JSON.stringify({ deviceId: meta.deviceId, installId: meta.installId }, null, 2), { mode: 0o600 });
@@ -107,5 +129,6 @@ for (const name of ['model-catalog.json', 'preset-context.json']) {
 }
 
 console.log(`OK — token 可解，剩余 ${daysLeft} 天；导出目录：${out}`);
+console.log(cookies ? `平台 Cookie 对已随 store.json 导出（${Object.keys(cookies).join('、')}）——NAS 端自动续期开箱即用。` : '注意：本次未导出平台 Cookie 对（换发会话要素），NAS 端请在管理台「导入 Cookie」补录，否则自动续期会报 40115。');
 console.log('把 credentials/ 拷到 NAS 的 /app/runtime/credentials/，TeleAgent-layout/ 拷到 /data/TeleAgent/。');
-console.log('注意：store.json 里的 token 是明文凭据，不要外传/提交 git。');
+console.log('注意：store.json 里的 token 和 Cookie 都是明文凭据，不要外传/提交 git。');

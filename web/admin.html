@@ -304,7 +304,16 @@
         </div>
       </div>
       <p class="desc" id="authSummary">加载中…</p>
+      <p class="desc" id="authCookieRow" style="display:none"></p>
       <div id="authBanner" style="display:none; padding:10px 14px; border-radius:10px; margin:8px 0 0; background:rgba(229,72,77,.12); color:#e5484d; font-size:13px;"></div>
+      <div id="cookieImportBox" style="display:none; margin-top:10px;">
+        <p class="desc" style="margin:0 0 6px;">换发会话还需要平台 Cookie 对（服务器用它定位会话，缺失会报 40115 session_not_found）。在浏览器打开登录页并完成登录后，按 F12 → Network → 任选一个 teleai.com.cn 请求 → 复制请求头里完整的 Cookie 值粘贴到下面：</p>
+        <div style="display:flex; gap:8px;">
+          <input id="cookieInput" style="flex:1; padding:8px 10px; border-radius:8px; border:1px solid var(--line, #ccc); font:12px/1.4 monospace; background:transparent; color:inherit;" placeholder="operToken=…; operationToken=…" autocomplete="off" spellcheck="false" />
+          <button class="btn" id="cookieImportBtn">导入 Cookie</button>
+        </div>
+        <p class="desc" id="cookieImportMsg" style="margin:6px 0 0;"></p>
+      </div>
     </section>
 
     <section class="card panel">
@@ -1131,12 +1140,39 @@ curl http://127.0.0.1:8787/v1/chat/completions \
     } else {
       banner.style.display = 'none';
     }
+    // 平台 Cookie 对（换发会话要素）状态 + 导入入口
+    var pc = st.platformCookies || {};
+    var hasCookie = pc.operToken || pc.operationToken;
+    var row = $a('authCookieRow');
+    row.style.display = '';
+    var names = [];
+    if (pc.operToken) names.push('operToken');
+    if (pc.operationToken) names.push('operationToken');
+    row.innerHTML = hasCookie
+      ? '换发 Cookie：<b>已就绪</b>（' + esc(names.join('、')) + '）——续期可完全自动'
+      : '换发 Cookie：<b style="color:#e5484d">缺失</b>——自动续期会报 40115 session_not_found，请在下方导入';
+    $a('cookieImportBox').style.display = hasCookie ? 'none' : '';
   }
   function loadAuth() {
     authApi('/admin/api/auth').then(function (r) {
       if (r.status === 200 && r.data && r.data.renewal) renderAuth(r.data);
     }).catch(function () {});
   }
+  $a('cookieImportBtn').addEventListener('click', function () {
+    var raw = $a('cookieInput').value.trim();
+    if (!raw) { $a('cookieImportMsg').textContent = '请先粘贴 Cookie 字符串'; return; }
+    $a('cookieImportBtn').disabled = true;
+    authApi('/admin/api/auth/cookies', { method: 'POST', body: { cookie: raw } }).then(function (r) {
+      $a('cookieImportBtn').disabled = false;
+      if (r.status === 200 && r.data && r.data.ok) {
+        $a('cookieImportMsg').textContent = '已导入：' + (r.data.imported || []).join('、');
+        $a('cookieInput').value = '';
+        loadAuth();
+      } else {
+        $a('cookieImportMsg').textContent = (r.data && r.data.error) || '导入失败';
+      }
+    }).catch(function () { $a('cookieImportBtn').disabled = false; $a('cookieImportMsg').textContent = '导入请求失败'; });
+  });
   $a('authRenewBtn').addEventListener('click', function () {
     $a('authRenewBtn').disabled = true;
     authApi('/admin/api/auth/renew', { method: 'POST' }).then(function () {
