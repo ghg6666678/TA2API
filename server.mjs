@@ -17,6 +17,8 @@ import {
   saveCredentialStore,
   startRenewalLoop,
   extractLoginResult,
+  exchangeCodeForToken,
+  osTypeFor,
   jwtExpiresAt,
   tokenIat,
   detectRenewalMode,
@@ -446,14 +448,36 @@ if (guiCompanion) {
   follower.unref?.();
 }
 
-/** 管理台登录：接收登录页回跳网址（iframe postMessage 或手工粘贴），提取 token → 落库 → 换核。 */
+/**
+ * 管理台登录：接收登录回跳网址，提取 token → 落库 → 换核。
+ *
+ * 浏览器拿到的回执常常**只有 code 没有 token**（服务端把签发那一跳交给桌面客户端）。
+ * 此时按桌面端身份自己请求一次回执地址，逐跳找 token——见 exchangeCodeForToken。
+ */
 async function handleAdminLogin(rawUrl) {
   const extracted = extractLoginResult(rawUrl);
   if (!extracted.ok) {
     return { ok: false, error: '这不是登录回跳网址：应包含 /cowork/auth 路径与 code/token 参数' };
   }
   if (!extracted.token) {
-    return { ok: false, error: '回跳网址缺少 token 参数（只有 code）。请复制登录完成后浏览器地址栏的完整网址再试。' };
+    console.log('[teleagent] 回执只有 code，按桌面端身份尝试换取 token…');
+    const ex = await exchangeCodeForToken(rawUrl, {
+      deviceId: authState.deviceId,
+      appVersion: kernelVersion() || '',
+      osType: osTypeFor(),
+    });
+    if (!ex.ok) {
+      return {
+        ok: false,
+        error:
+          `回执里只有 code，反代按桌面端身份换取 token 失败（${ex.reason}）` +
+          (ex.detail ? `：${ex.detail}` : '') +
+          '。该 code 很可能已被浏览器那次访问消费掉——请在登录授权后不要等待页面加载，' +
+          '立刻复制地址栏网址（或在新窗口登录后直接复制，不要刷新）。',
+      };
+    }
+    console.log(`[teleagent] 用 code 换到 token（via ${ex.via}${ex.hops ? ` / ${ex.hops} 跳` : ''}）`);
+    extracted.token = ex.token;
   }
   const next = saveCredentialStore(runtimeRoot, {
     token: extracted.token,

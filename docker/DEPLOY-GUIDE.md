@@ -95,7 +95,20 @@ data/TeleAgent/                       ← 挂载为容器 /data/TeleAgent
 > 若打开 OAuth 直链后仍停在 `/teleagent`，说明浏览器里已有网页版会话被复用——
 > 换无痕窗口重试，或先在该站退出登录。
 >
-> 登录入口地址已内置，只有官方换域名时才需要用 `TA_LOGIN_PAGE_URL` 覆盖。
+> ⚠ **2026-11-21 实测更新：浏览器独立登录在 3.1.1 下已走不通。**
+> 走 OAuth 直链后，浏览器能停在回执页
+> `…/superCowork/sapi/cowork/auth?appVersion=&code=ucc.…`，但**只有 code、没有 token**，
+> 页面提示「打开桌面客户端」。三条验证：
+> ① 桌面客户端并不自己换 token——它监听 `did-navigate` 从 URL 直接读 `token`
+>   （`main-runtime` 的 `Q4e`：`searchParams.get('code')` + `searchParams.get('token')`）；
+> ② 把该 code 交给反代用桌面 UA + `X-App-Version`/`X-OS-Type`/`X-SuperAgent-Device-Id`
+>   重放，一律 `400 {"error":"get token error"}`——浏览器那次访问已把它消费掉；
+> ③ 用导出的平台 Cookie 对（`operToken`/`operationToken`）直接请求回执接口，
+>   仍 302 回授权页——这对 Cookie 是平台会话，不是 OAuth 登录会话，不能替代。
+> **结论**：token 的签发绑定在「完成 OAuth 的客户端会话」上，无客户端环境没有独立登录入口。
+> NAS 首次取得凭据请走 2.4 节的 PC 导出迁移，或选 2.5 的容器内置浏览器方案。
+
+> ~~登录入口地址已内置，只有官方换域名时才需要用 `TA_LOGIN_PAGE_URL` 覆盖。~~
 >
 > **为什么最后一步要复制一次网址**：token 由官方签发给 `agent.teleai.com.cn` 域，
 > 而反代跑在 `127.0.0.1` 或 NAS 局域网地址上，浏览器同源策略不允许跨域读取；
