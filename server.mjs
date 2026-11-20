@@ -48,16 +48,20 @@ if (missing.length > fatalMissing.length) {
 const owner = resolveOwner();
 const runtimeRoot = path.join(here, 'runtime');
 
-// 登录入口 = 桌面端同款 OAuth 直链（不是网页版登录壳）。
-//   /meter/teleagent-login/login 是「网页版」登录壳，登录完进 https://agent.teleai.com.cn/teleagent，
-//   地址栏不会出现 token —— 拿不到凭据。
-//   带 source=01（FA.DESKTOP）才是桌面端链路：
-//     .../cowork/auth?source=01 → 302 teleai 统一登录 → 授权后带 code 回
-//     .../cowork/auth?appVersion=&code=… → 换 token → 回执页 .../cowork/auth?code=…&token=…
-//   桌面版正是从该回执 URL 里取 token（LoginWindow 的 did-navigate 判定 pathname 以 /cowork/auth 结尾）。
+// 登录入口 = 官方网页版登录页。
+//
+// 为什么不走桌面端的 OAuth 直链（.../cowork/auth?source=01）：
+//   那条链授权完成后停在回执页 .../cowork/auth?appVersion=&code=ucc.…，
+//   页面会立刻尝试唤起 teleagent:// 客户端，且 code 在浏览器加载那一刻就被消费，
+//   既来不及复制、复制来也换不出 token（2026-11-21 三次实测均为 400 get token error）。
+//
+// 现在的主通道是「用 Cookie 登录」：网页版登录完成后浏览器里会有
+//   operToken + operationToken（= `<tenant>:<accessToken>`，其中 accessToken 与凭据库的
+//   token 逐字节相同），把它粘贴进管理台即可同时完成「登录 + 续期凭据导入」。
+// 网页版登录页登录后会进 https://agent.teleai.com.cn/teleagent —— 这是预期行为，Cookie 已生成。
+//
 // TA_LOGIN_PAGE_URL 可覆盖（官方改域名时用）。
-const DEFAULT_LOGIN_PAGE_URL =
-  'https://agent.teleai.com.cn/superCowork/sapi/cowork/auth?source=01';
+const DEFAULT_LOGIN_PAGE_URL = 'https://agent.teleai.com.cn/meter/teleagent-login/login';
 
 // 部署模式（2026-11-21 用户决策）：
 //   gui-companion —— PC 上桌面版与反代共存：桌面版独占 token 换发（双客户端都换发会
@@ -454,6 +458,36 @@ if (guiCompanion) {
  * 浏览器拿到的回执常常**只有 code 没有 token**（服务端把签发那一跳交给桌面客户端）。
  * 此时按桌面端身份自己请求一次回执地址，逐跳找 token——见 exchangeCodeForToken。
  */
+async function applyLoginToken(token, { via = 'login' } = {}) {
+  const next = saveCredentialStore(runtimeRoot, {
+    token,
+    tokenIssuedAt: Date.now(),
+    tokenExpiresAt: jwtExpiresAt(token),
+    absoluteExpiresAt: null,
+    generation: (storedCredentials?.generation ?? 0) + 1,
+    source: via,
+    lastAttemptDay: '',
+  });
+  storedCredentials = next;
+  authState.token = token;
+  authSource = 'credentials';
+  authStatus = {
+    source: 'credentials',
+    generation: next.generation,
+    tokenExpiresAt: next.tokenExpiresAt,
+    absoluteExpiresAt: null,
+    lastAttempt: null,
+    needLogin: null,
+  };
+  await forceRestartKernel(`token 已更新（${via}），拉起内核`);
+  console.log(
+    `[teleagent] ${via} 成功：generation=${next.generation} · token 到期 ${
+      next.tokenExpiresAt ? new Date(next.tokenExpiresAt).toLocaleString() : '未知'
+    }`,
+  );
+  return next;
+}
+
 async function handleAdminLogin(rawUrl) {
   const extracted = extractLoginResult(rawUrl);
   if (!extracted.ok) {
@@ -479,32 +513,7 @@ async function handleAdminLogin(rawUrl) {
     console.log(`[teleagent] 用 code 换到 token（via ${ex.via}${ex.hops ? ` / ${ex.hops} 跳` : ''}）`);
     extracted.token = ex.token;
   }
-  const next = saveCredentialStore(runtimeRoot, {
-    token: extracted.token,
-    tokenIssuedAt: Date.now(),
-    tokenExpiresAt: jwtExpiresAt(extracted.token),
-    absoluteExpiresAt: null,
-    generation: (storedCredentials?.generation ?? 0) + 1,
-    source: 'login',
-    lastAttemptDay: '',
-  });
-  storedCredentials = next;
-  authState.token = extracted.token;
-  authSource = 'credentials';
-  authStatus = {
-    source: 'credentials',
-    generation: next.generation,
-    tokenExpiresAt: next.tokenExpiresAt,
-    absoluteExpiresAt: null,
-    lastAttempt: null,
-    needLogin: null,
-  };
-  await forceRestartKernel('管理台登录成功，拉起内核');
-  console.log(
-    `[teleagent] 登录成功：generation=${next.generation} · token 到期 ${
-      next.tokenExpiresAt ? new Date(next.tokenExpiresAt).toLocaleString() : '未知'
-    }`,
-  );
+  const next = await applyLoginToken(extracted.token, { via: 'login' });
   return {
     ok: true,
     generation: next.generation,
@@ -554,30 +563,79 @@ function handleAdminLogout() {
   return { ok: true, hadToken: had, status: { ...authStatus, hasToken: false } };
 }
 
-/** 管理台导入 Cookie 对：粘贴浏览器登录页的 Cookie 头（operToken=...; operationToken=...）。 */
+/** 管理台导入 Cookie：粘贴 Cookie 头、整段请求头、或 Application 面板里的单个值都行。 */
 function parseCookieHeader(raw) {
+  const text = String(raw ?? '').trim();
   const out = {};
-  for (const part of String(raw).split(';')) {
+  if (!text) return out;
+  for (const part of text.split(/[;\n\r]/)) {
     const eq = part.indexOf('=');
     if (eq <= 0) continue;
     const name = part.slice(0, eq).trim();
-    const value = part.slice(eq + 1).trim();
+    const value = part.slice(eq + 1).trim().replace(/^"|"$/g, '');
     if ((name === 'operToken' || name === 'operationToken') && value) out[name] = value;
+    // 整段请求头粘贴：Cookie: operToken=...
+    if (name.toLowerCase() === 'cookie') {
+      Object.assign(out, parseCookieHeader(value));
+    }
+  }
+  if (out.operToken || out.operationToken) return out;
+  // 裸值：<tenant>:<jwt> 是 operationToken；单独一段 JWT 视长度区分
+  const bare = text.replace(/^"|"$/g, '');
+  if (/^[^:\s]+:eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test(bare)) out.operationToken = bare;
+  else if (/^eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test(bare)) {
+    if (bare.length >= 400) out.operationToken = bare; // accessToken 裸用，tenant 前缀缺失时下面兜底
+    else out.operToken = bare;
   }
   return out;
 }
-function handleCookieImport(raw) {
+
+/**
+ * operationToken = `<tenant>:<accessToken>`，而 accessToken 与凭据库里的 token 完全一致
+ * （2026-11-21 实测：639 字节逐字节相同）。因此只要拿到 operationToken 就等于拿到可用 token，
+ * 不需要 OAuth code——这是 NAS 上唯一可行的登录通道。
+ */
+function accessTokenFromCookies(cookies) {
+  const opt = cookies?.operationToken;
+  if (!opt) return null;
+  const i = opt.indexOf(':');
+  const acc = i > 0 ? opt.slice(i + 1) : opt;
+  return acc.startsWith('eyJ') && acc.split('.').length === 3 ? acc : null;
+}
+
+async function handleCookieImport(raw) {
   const parsed = parseCookieHeader(raw);
+  const token = accessTokenFromCookies(parsed);
   if (!parsed.operToken && !parsed.operationToken) {
     return {
       ok: false,
-      error: '未找到 operToken / operationToken：请在登录页（teleai.com.cn 域）的请求头里复制完整 Cookie 再试',
+      error:
+        '未识别出 operToken / operationToken。可以粘贴三种形式之一：① 完整 Cookie 头（operationToken=xxx; operToken=yyy）' +
+        '② F12 → Application → Cookies 里 operationToken 的整段值（形如 Em9xR4:eyJ…）③ 只有 access token 的 JWT。',
     };
   }
   cookiesCache = { ...(cookiesCache ?? {}), ...parsed };
-  const next = saveCredentialStore(runtimeRoot, { cookies: cookiesCache });
-  storedCredentials = next;
-  return { ok: true, imported: Object.keys(parsed), cookies: cookieStatus() };
+  storedCredentials = saveCredentialStore(runtimeRoot, { cookies: cookiesCache });
+  if (!token) {
+    return {
+      ok: true,
+      imported: Object.keys(parsed),
+      login: false,
+      cookies: cookieStatus(),
+      message:
+        '已保存 Cookie 用于自动续期，但没能从中解析出 token。' +
+        '请确认粘贴的是 operationToken 的完整值（带 `<租户>:<token>` 前缀）。',
+    };
+  }
+  const next = await applyLoginToken(token, { via: 'cookie' });
+  return {
+    ok: true,
+    imported: Object.keys(parsed),
+    login: true,
+    generation: next.generation,
+    tokenExpiresAt: next.tokenExpiresAt,
+    cookies: cookieStatus(),
+  };
 }
 function cookieStatus() {
   return {

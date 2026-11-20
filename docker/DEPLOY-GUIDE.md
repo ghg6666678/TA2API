@@ -71,52 +71,50 @@ data/TeleAgent/                       ← 挂载为容器 /data/TeleAgent
 如果跑过 `docker/export-credentials.mjs`（第 2.4 节），这些文件已自动汇总在
 导出目录的 `TeleAgent-layout/` 里，整体拷过来即可。
 
-### 2.2 NAS 首次登录（浏览器完成，无 PC 依赖）
+### 2.2 NAS 首次登录（用浏览器 Cookie，一步完成）
 
-1. `docker compose up -d --build` 启动容器（见第 6 节）。
-   日志会出现「尚未登录：内核暂不启动。请打开管理台完成登录」——这是预期状态。
+> 2026-11-21 实测结论：**不要试图从登录回执页复制 token。**
+> 桌面端 OAuth 链（`.../cowork/auth?source=01`）授权后会停在
+> `.../cowork/auth?appVersion=&code=ucc.…`，页面立刻尝试唤起 `teleagent://` 客户端，
+> 既来不及复制，code 也在浏览器加载那一刻被消费掉（拿它重放一律
+> `400 {"error":"get token error"}`）。这条路无解，已放弃。
+>
+> 可用通道是**平台 Cookie**：`operationToken` 的值是 `<租户>:<accessToken>`，
+> 其中 accessToken 与凭据库里的 `token` **逐字节相同**（实测 639 字节完全一致）。
+> 拿到它就等于拿到登录 token；而这对 Cookie 本来又是自动续期要用的凭据——
+> 一次粘贴同时解决「登录」和「续期」。
+
+1. 启动容器（见第 6 节）。日志会显示「尚未登录：内核暂不启动」，属预期状态。
 2. 局域网浏览器打开 `http://NAS_IP:8787/admin?token=<TA_ADMIN_TOKEN>`，
-   顶部出现「登录态与自动续期」面板。
-3. 点「打开登录入口」：在**新窗口**打开桌面端同款授权链（地址已内置，无需配置）：
-   `https://agent.teleai.com.cn/superCowork/sapi/cowork/auth?source=01`
-   → 302 到天翼AI统一登录页 `www.teleai.com.cn/master-auth`（支持短信验证码）
-   → 授权后带 `code` 回到 `.../cowork/auth` 换 token。
-   用新窗口而非内嵌 iframe，是因为浏览器默认阻止第三方 Cookie，内嵌登录拿不到会话。
-4. 授权完成后，该窗口地址栏会变成**回执页**：
-   `https://agent.teleai.com.cn/superCowork/sapi/cowork/auth?code=…&token=…`。
-   复制整个网址，回到管理台在输入框按 **Ctrl+V**（粘贴即自动提交）。
-   凭据当场写入、内核自动拉起，`generation` 加一。
-5. 若还要自动续期，接着导入平台 Cookie 对（`operToken` / `operationToken`，见 2.3 节）——
-   回执网址只带 access token，续期还必须靠这对 Cookie 定位换发会话。
+   顶部有「登录态与自动续期」面板。
+3. 点「登录账号」→「打开官方登录页」：新窗口打开网页版登录页
+   `https://agent.teleai.com.cn/meter/teleagent-login/login`，用短信验证码完成登录。
+   **跳进 `/teleagent` 网页版界面是正常现象**——目的只是让浏览器拿到 Cookie。
+4. 在该窗口取 Cookie，两种方式任选：
+   - **A（最省事，推荐）**：F12 → **Network** → 刷新 → 点任意一条发往 teleai 的请求 →
+     Request Headers 里的 `cookie:`，复制冒号后**整段**（天然包含两个值）。
+   - **B**：F12 → **Application** → **Cookies** → `agent.teleai.com.cn` →
+     复制 `operationToken` 的值（形如 `Em9xR4:eyJhbGci…`）。
+5. 回到管理台「用 Cookie 登录」框粘贴 → 点「导入并登录」。
+   凭据写入、内核自动拉起，`generation` 加一，日志出现
+   `[teleagent] cookie 成功：generation=…`。
+6. 验证：按第 7 节发一次对话请求，应返回 200。
 
-> ⚠ **不要用 `https://agent.teleai.com.cn/meter/teleagent-login/login`**（网页版登录壳）。
-> 实测：在那里登录后浏览器直接进入 `https://agent.teleai.com.cn/teleagent`（网页版界面），
-> 地址栏**不会**出现 token，抓不到凭据。必须走带 `source=01` 的 OAuth 直链。
-> 若打开 OAuth 直链后仍停在 `/teleagent`，说明浏览器里已有网页版会话被复用——
-> 换无痕窗口重试，或先在该站退出登录。
+> 只给 `operationToken` 也能登录；但**自动续期建议连 `operToken` 一起给**（方式 A 天然成对）。
+> 实现上缺哪个就只发哪个，不会报错，但成对齐全时服务端定位换发会话更稳。
 >
-> ⚠ **2026-11-21 实测更新：浏览器独立登录在 3.1.1 下已走不通。**
-> 走 OAuth 直链后，浏览器能停在回执页
-> `…/superCowork/sapi/cowork/auth?appVersion=&code=ucc.…`，但**只有 code、没有 token**，
-> 页面提示「打开桌面客户端」。三条验证：
-> ① 桌面客户端并不自己换 token——它监听 `did-navigate` 从 URL 直接读 `token`
->   （`main-runtime` 的 `Q4e`：`searchParams.get('code')` + `searchParams.get('token')`）；
-> ② 把该 code 交给反代用桌面 UA + `X-App-Version`/`X-OS-Type`/`X-SuperAgent-Device-Id`
->   重放，一律 `400 {"error":"get token error"}`——浏览器那次访问已把它消费掉；
-> ③ 用导出的平台 Cookie 对（`operToken`/`operationToken`）直接请求回执接口，
->   仍 302 回授权页——这对 Cookie 是平台会话，不是 OAuth 登录会话，不能替代。
-> **结论**：token 的签发绑定在「完成 OAuth 的客户端会话」上，无客户端环境没有独立登录入口。
-> NAS 首次取得凭据请走 2.4 节的 PC 导出迁移，或选 2.5 的容器内置浏览器方案。
+> **NAS 上没有浏览器/F12 怎么办**：Cookie 与设备无关。在任意一台电脑的浏览器登录同一账号、
+> 取出 Cookie，再粘到 NAS 的管理台即可。或者直接走 2.4 节的 PC 导出迁移。
 
-> ~~登录入口地址已内置，只有官方换域名时才需要用 `TA_LOGIN_PAGE_URL` 覆盖。~~
->
-> **为什么最后一步要复制一次网址**：token 由官方签发给 `agent.teleai.com.cn` 域，
-> 而反代跑在 `127.0.0.1` 或 NAS 局域网地址上，浏览器同源策略不允许跨域读取；
-> 官方把 token 放在回执页的地址栏 query 里，只能由浏览器带出来一次。
-> 实测 OAuth 链：`/superCowork/sapi/cowork/auth?source=01` → 302 →
-> `www.teleai.com.cn/master-auth?redirect_uri=https%3A%2F%2Fagent.teleai.com.cn%2FsuperCowork%2Fsapi%2Fcowork%2Fauth%3FappVersion%3D&client_id=…`，
-> `redirect_uri` 由服务端写死，传 `redirect_url` / `redirectUri` / `state` 均不回显——
-> 所以不存在「登录完自动写进反代」的通道。
+**为什么必须手工粘一次**：反代跑在 `127.0.0.1` 或 NAS 局域网地址，与
+`agent.teleai.com.cn` 不同源，浏览器同源策略不允许跨站读取 Cookie；
+官方也未提供「登录后自动把 token 送到第三方地址」的通道
+（`redirect_url` 由服务端写死为 `…/cowork/auth?appVersion=`，实测传
+`redirect_url` / `redirectUri` / `state` 均不回显）。
+
+> 登录入口地址已内置（`DEFAULT_LOGIN_PAGE_URL`），只有官方换域名时才需要用
+> `TA_LOGIN_PAGE_URL` 覆盖。
+
 
 ### 2.3 自动续期（登录一次后的日常运行）
 
@@ -350,10 +348,10 @@ curl -s http://NAS_IP:8787/admin/api/auth -H "x-admin-token: $TA_ADMIN_TOKEN"
 - **真实网关的 token-refresh 调用**（协议与官方客户端逐字节一致，但按风控纪律，
   未经明确同意不向生产网关发测试请求——首次部署登录后的第一次自动续期即真实验证）。
   本次容器实测刻意设 `TA_RENEW_INTERVAL_MS=0`，避免与同机桌面版抢同一换发会话（40115）。
-- ~~登录页 iframe 的 `postMessage` 回传通道~~ —— 已证伪：官方登录页登录成功后执行
-  `location.assign(redirect_url)`，且 `redirect_url` 只在 WEB 模式生效；桌面模式走
-  `/superCowork/sapi/cowork/auth?source=01` → teleai 授权 → 回执页（地址栏带 token）。
-  故改为「新窗口登录 + 读取剪贴板/粘贴回执网址」，见 2.2 节。
+- ~~浏览器独立登录拿 token~~ —— 已证伪并放弃：桌面端 OAuth 链授权后回执页只有 `code`、
+  且立刻唤起 `teleagent://`；code 在浏览器加载那一刻即失效（重放 400 get token error）。
+  现改为「网页版登录 → 复制平台 Cookie → 管理台导入」，见 2.2 节。
+  该通道已在本机容器实测：`generation 4 → 5`，对话 200。
 - `ghcr.io/ghg6666678/ta2api` 镜像是否存在（gh 无 `read:packages` scope）；
   本文走本地构建，不依赖 GHCR。
 - ARM64 容器实跑（本机为 x86_64；arm64 内核只做了 ELF 头鉴定与 sha256 核对）。
@@ -480,7 +478,8 @@ environment:
 1. 管理台 →「登录态与自动续期」→「退出登录」；
 2. 凭据清空、内核停机，状态变 `hasToken:false`、`needLogin` 有提示；
    此时业务端点返回 `401 {"code":"need_login","message":"尚未登录：请在管理台 /admin …"}`；
-3. 点「打开登录入口」走完整登录（回执网址粘贴即提交），成功后 `generation + 1`、内核自动拉起。
+3. 按 2.2 节粘贴平台 Cookie（`operationToken` / 完整 Cookie 头）并点「导入并登录」，
+   成功后 `generation + 1`、内核自动拉起。
 
 `POST /admin/api/auth/logout` 即同一动作，脚本化测试用。
 「退出登录」只清 token，**保留** `operToken/operationToken` 这对 Cookie（换 token 后仍可复用）。
