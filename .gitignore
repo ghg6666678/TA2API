@@ -6,12 +6,9 @@ runtime-probe/
 # 本机密钥（网关 key）
 local.secrets.json
 
-# Docker 部署的本机产物（凭据 / 密钥 / 提取出的内核二进制，均不入库）
-docker/.env
-docker/gateway_key.txt
-docker/data/
-docker/ta-export*/
-docker/payload/TeleAgent-linux-*
+# Docker / NAS 部署产物（2026-11-21 起整条路线停止维护，文件已从仓库移除；
+# 本地保留一份用于既有容器，但不再入库）
+docker/
 
 # 逆向抓下来的客户端片段（不随仓库分发）
 notes/

@@ -37,7 +37,7 @@ TeleAgent 上游  https://agent.teleai.com.cn/superCowork/sapi/api/v1
 | [docs/ADMIN.md](docs/ADMIN.md) | **Web 管理台**：六块面板能做什么、密钥存储与安全边界 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | **架构与内部机制**：请求链路、模块地图、内核生命周期、事件流、工具桥、登录态解密、已知限制、升级排查清单 |
 | [docs/RELIABILITY.md](docs/RELIABILITY.md) | **稳定性**：内核看门狗、先起后换、会话 TTL、已知稳定性边界、排障速查 |
-| [docs/nas-docker.md](docs/nas-docker.md) | **NAS / Docker 部署（已归档）**：实测结论与替代方案 |
+| [docs/nas-docker.md](docs/nas-docker.md) | **为什么没有 Docker / NAS 方案**：容器化路线的实测依据、已排除项与现在的替代用法 |
 | [docs/GAPS.md](docs/GAPS.md) | **功能缺口盘点**：文档宣称但代码尚未实现的能力，及其优先级建议 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本变更记录 |
 

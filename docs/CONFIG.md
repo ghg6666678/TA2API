@@ -10,7 +10,7 @@
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
 | `TA_PORT` | `8787` | 本地监听端口 |
-| `TA_HOST` | `127.0.0.1` | 绑定地址。局域网访问设 `0.0.0.0`（Docker 场景） |
+| `TA_HOST` | `127.0.0.1` | 绑定地址。局域网访问（另一台机器连过来）设 `0.0.0.0` |
 | `TA_API_KEY` | 空 | 主密钥：设置后要求 `Authorization: Bearer` 或 `x-api-key`，与管理台生成的密钥并存 |
 | `TA_KEYS_FILE` | `runtime/config/api-keys.json` | 管理台维护的密钥表路径 |
 | `TA_DEFAULT_MODEL` | 目录第一个 | 客户端模型名匹配不上时的兜底模型 |
@@ -53,7 +53,7 @@
 
 > ⚠ **自管换发（`nas` 模式）在容器/NAS 中实测不可用**：服务端只接受官方桌面客户端
 > 发出的换发请求，第三方 HTTP 客户端（Node / curl / Chromium 均实测）一律返回
-> `40115 session not found`。详见 [../docker/DEPLOY-GUIDE.md](../docker/DEPLOY-GUIDE.md) 2.3。
+> `40115 session not found`。详见 [nas-docker.md](nas-docker.md)。
 > PC 上用 `gui` 模式跟随桌面版，或按 token 到期日重新导入凭据。
 
 ### 调试

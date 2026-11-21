@@ -1,41 +1,58 @@
-# NAS / Docker 部署（已归档）
+# 为什么没有 Docker / NAS 方案
 
-> 本文件记录的是 v0.7.x 时期的设计稿：双容器（`gateway` + `renew`）、GHCR 多架构镜像、
-> `TA_REQUIRE_AUTH` 强制鉴权、容器内自管续期。**这些都没有按原样实现**，其中
-> 「容器内自动续期」已被实测证伪。不要照这篇去配 `renew` 容器或 `TA_REQUIRE_AUTH`——
-> 这两个东西在当前代码里不存在。
+> 结论：**容器化部署曾经可用，但无法长期运行，因此整条路线已停止维护，相关文件已从仓库移除。**
+> 本文只保留「为什么走不通」的结论与依据，不再提供部署步骤。
 
-## 现在实际可用的东西
+## 一句话原因
 
-Docker 交付物见 [`../docker/DEPLOY-GUIDE.md`](../docker/DEPLOY-GUIDE.md)：单容器、本地构建、
-管理台登录、双卷持久化。
+反代自己不产生 token，它只能**借用**桌面端的登录态。桌面端的 token 有效期 7 天，
+续期（`token-refresh`）只允许**官方桌面客户端本身**发起——第三方进程无论用什么 HTTP 栈
+都会被拒。所以放在 NAS 上的容器，最多只能用 7 天，之后必须有人从 PC 上重新导入一次凭据。
 
-实测通过：
+「每 7 天人工干预一次」这个前提，让「NAS 常驻、无人值守」的意义基本消失了；
+而为了让容器自己续期，就得在容器里跑完整的 Electron 客户端（镜像 +1GB、要图形栈），
+对轻量 NAS 不现实。权衡之后整条路线放弃。
+
+## 实测依据（2026-11-21，真机）
+
+同一份凭据，桌面版能连续两次换发成功，换发产出的最新凭据给第三方客户端重放则全部失败：
+
+| 客户端 | 结果 |
+|---|---|
+| 桌面版自己（同一会话，连换两次） | ✅ `token-refresh succeeded ttl=604798s` / `604799s` |
+| Node `fetch`（undici） | ❌ `401 40115 session not found` |
+| curl 8.21（Schannel TLS 栈） | ❌ 40115 |
+| Edge / Chromium 131（Playwright，页面内同源 fetch + 注入 Cookie） | ❌ 40115 |
+
+逐项排除过的变量：凭据过期、Cookie 未轮转、`deviceId` 不匹配（两个候选都试过）、
+UA、`X-App-Version`（`3.1.1.000` / `3.1.1` / 空）、`Origin` / `Referer`、
+Cookie 顺序、双客户端竞争、会话一次性消费。
+
+剩下的解释只有一个：服务端按**客户端的网络栈特征**识别身份（最可能是 TLS/JA4 指纹），
+不是靠 token、Cookie 或头部字段。这也符合设计意图——官方本来就不打算让第三方换发。
+
+## 容器里原本能跑的部分
+
+这些当时实测是通的，只是被「续期不可行」一票否决，记下来备查：
 
 - 三协议端点（chat / responses / messages）+ 工具中继闭环
 - 内核看门狗自愈：容器内 `kill -9` 内核后约 11 秒自动复活
 - 局域网访问（`TA_HOST=0.0.0.0`）
 - 卷持久化（`teleagent.db`、密钥表、凭据、内核日志）
+- 首次登录：浏览器取 `operationToken` 粘进管理台即可（`operationToken` 形如
+  `<租户>:<accessToken>`，冒号后段就是 access token）
 
-## 实测不可行的部分
+## 现在的实际用法
 
-**容器内 token 换发**。服务端只接受官方桌面客户端发出的换发请求：用桌面版刚换发产出的
-最新凭据（token、`operToken`、`deviceId`、各项头部全部核对过），在 Node fetch、
-curl 8.21（Schannel）、Edge/Chromium 131 三种客户端上重放，一律返回
-`40115 session not found`；而同一时刻桌面版自己换发是成功的。
+| 场景 | 做法 | 维护成本 |
+|---|---|---|
+| 有 PC 常开 | 桌面版 + 反代（`gui` 模式，反代跟随桌面版 token，自己不换发） | 零维护 |
+| 必须放 NAS | 每 7 天在管理台「用 Cookie 登录」粘一次 `operationToken`；剩余 2 天会提示 | 每周一次 |
 
-已排除：凭据过期、Cookie 未轮转、`deviceId` 不匹配、UA/版本号、双客户端竞争、
-会话一次性消费。详见 `docker/DEPLOY-GUIDE.md` 2.3 的完整对照表。
+即使用容器，也建议按上表第二条来运营，不要指望自动续期。
 
-## 所以 NAS 的现实方案
+## 备份
 
-1. **每 7 天导入一次凭据**（token TTL 为 7 天）：在 PC 桌面版登录后
-   `node docker/export-credentials.mjs` 导出，或直接在管理台「用 Cookie 登录」粘贴
-   `operationToken`（更省事，不用拷文件）。管理台会在剩余 2 天内提示更新。
-2. 或者在 PC 上跑反代（`gui` 模式，跟随桌面版 token 更新），不追求 NAS 常驻。
-
-## 保留这份文件的理由
-
-原设计里的数据目录布局（`Local State` / `users/<scope>/app-auth/` / partition Cookies）、
-卷划分、首次登录流程仍有参考价值。原始设计稿已备份在项目外
-（`TA2API-docs-原始设计稿`），实现细节以 `docker/DEPLOY-GUIDE.md` 为准。
+停止维护前的完整交付物（Dockerfile、compose、entrypoint、部署指南、协议分析、
+探针脚本）已从仓库移除，仍可在本机 `docker/` 目录或 git 历史中找到
+（`git log -- docker/`）。原始设计稿另有一份在项目外。

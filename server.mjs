@@ -38,7 +38,7 @@ const missing = ensureTeleAgentLayout();
 const fatalMissing = missing.filter((f) => f !== LOCAL_STATE_FILE);
 if (fatalMissing.length > 0) {
   console.error('找不到 TeleAgent 安装/内核信息：\n  ' + fatalMissing.join('\n  '));
-  console.error('请先安装 TeleAgent（或按 docker/DEPLOY-GUIDE.md 准备容器载荷）。');
+  console.error('请先安装并登录 TeleAgent 桌面端（至少打开过一次对话）。');
   process.exit(1);
 }
 if (missing.length > fatalMissing.length) {
