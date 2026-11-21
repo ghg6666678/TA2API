@@ -1132,14 +1132,13 @@ curl http://127.0.0.1:8787/v1/chat/completions \
     else if (!exp || days <= 0) { state = '已过期'; tone = '#e5484d'; }
     else if (days <= 3) { state = '即将到期'; tone = '#c58b00'; }
     else { state = '有效'; tone = '#30a46c'; }
-    // PC 上 token 由桌面版刷新，反代只跟随、不换发（见 docs/nas-docker.md）
-    var guiMode = (st.renewMode || 'gui-companion') !== 'nas';
+    // token 由桌面版刷新、反代只跟随（自管换发已移除，见 docs/nas-docker.md）
     $a('authSummary').innerHTML =
       '登录状态 <b style="color:' + tone + '">' + state + '</b>' +
       (exp ? ' · 到期 <b>' + fmtTs(exp) + '</b>（剩 ' + (days > 0 ? days.toFixed(1) + ' 天' : '已过期') + '）' : '') +
       '<br><span style="opacity:.72">凭据来源 ' + esc(st.source || 'none') +
       ' · 设备 <code>' + esc(st.deviceId || '—') + '</code>' +
-      (guiMode ? ' · token 由桌面版刷新，反代自动跟随' : '') + '</span>';
+      ' · token 由桌面版刷新，反代自动跟随</span>';
     var banner = $a('authBanner');
     if (!st.hasToken) {
       banner.textContent = '尚未登录：点「登录账号」完成一次登录（也可以直接把 Cookie 粘到下面）。';
@@ -1170,7 +1169,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   }
   function loadAuth() {
     authApi('/admin/api/auth').then(function (r) {
-      if (r.status === 200 && r.data && r.data.renewal) renderAuth(r.data);
+      if (r.status === 200 && r.data && 'hasToken' in r.data) renderAuth(r.data);
     }).catch(function () {});
   }
   function importCookie(silent) {
