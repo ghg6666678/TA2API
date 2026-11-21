@@ -132,7 +132,7 @@ CC Switch 一键注册命令，全部在 **[docs/CLIENTS.md](docs/CLIENTS.md)**�
 | PATCH / DELETE | `/admin/api/keys/:id` | 改名/备注/有效期/启停、删除单把 |
 | POST | `/admin/api/keys/bulk` | 批量 `enable` / `disable` / `reset` / `delete` |
 | POST | `/admin/api/settings` | 切换鉴权模式 `auto` / `on` / `off` |
-| GET·POST | `/admin/api/auth*` | 登录态：状态查询、Cookie 导入登录、退出登录 |
+| GET | `/admin/api/auth` | 登录态（只读）：状态、到期时间、凭据来源 |
 
 行为约定：
 

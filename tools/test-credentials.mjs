@@ -1,17 +1,13 @@
 #!/usr/bin/env node
-// 离线单测：lib/credentials.mjs（凭据库 + 登录通道）
-// 全部请求都打在本机 mock server 上，绝不访问真实网关。
+// 离线单测：lib/credentials.mjs（凭据库 + JWT 工具）
 //
-// 注：2026-11-21 起自管换发（token-refresh）实现已整体移除——服务端只认官方桌面
-// 客户端，第三方进程一律 40115。相关单测随之删除，理由见 docs/nas-docker.md。
+// 2026-11-21 起换发与「用 Cookie 登录」均已移除：token 只由桌面版签发并刷新，
+// 反代读取 token.json 跟随。相关单测随之删除，理由见 docs/nas-docker.md。
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  extractLoginResult,
-  exchangeCodeForToken,
   jwtExpiresAt,
   tokenIat,
   ensureDeviceIdentity,
@@ -34,68 +30,18 @@ async function t(name, fn) {
 const b64url = (obj) => Buffer.from(JSON.stringify(obj)).toString('base64url');
 const mkJwt = (payload) => `${b64url({ alg: 'none' })}.${b64url(payload)}.sig`;
 
-console.log('== 登录回执解析 ==');
-await t('extractLoginResult：cowork/auth 回跳 + code/token 提取', () => {
-  const good = extractLoginResult('https://x.example.com/superCowork/sapi/cowork/auth?code=C1&token=T1');
-  assert.equal(good.ok, true);
-  assert.equal(good.token, 'T1');
-  assert.equal(good.code, 'C1');
-  const codeOnly = extractLoginResult('https://x.example.com/cowork/auth?code=C2');
-  assert.equal(codeOnly.ok, true);
-  assert.equal(codeOnly.token, null);
-  assert.equal(extractLoginResult('https://x.example.com/other').ok, false);
-  assert.equal(extractLoginResult('not a url').ok, false);
-});
+console.log('== JWT 工具 ==');
 await t('jwtExpiresAt：解析 exp，坏 token 返回 null', () => {
   const exp = 1893456000;
   assert.equal(jwtExpiresAt(mkJwt({ exp })), exp * 1000);
   assert.equal(jwtExpiresAt('garbage'), null);
+  assert.equal(jwtExpiresAt(undefined), null);
 });
 await t('tokenIat：解析 iat，坏 token 返回 null', () => {
   const tok = mkJwt({ iat: 1700000000, exp: 1700604800 });
   assert.equal(tokenIat(tok), 1700000000 * 1000);
   assert.equal(tokenIat('not-a-jwt'), null);
 });
-
-console.log('== 回执换 token（本机 mock）==');
-const server = http.createServer((req, res) => {
-  const u = new URL(req.url, 'http://127.0.0.1');
-  if (u.pathname === '/cowork/auth') {
-    // 只有回执里带 code 且请求像桌面端时才给 token（模拟服务端逐跳签发）
-    const code = u.searchParams.get('code');
-    const isDesktop = String(req.headers['user-agent'] || '').includes('TeleAgent/');
-    if (code && isDesktop) {
-      res.writeHead(302, { location: `/cowork/auth?code=${code}&token=tok-from-redirect` });
-      res.end();
-      return;
-    }
-    res.writeHead(200, { 'content-type': 'text/html' });
-    res.end('<html>请打开桌面客户端</html>');
-    return;
-  }
-  res.writeHead(404).end('no route');
-});
-await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-const mockBase = `http://127.0.0.1:${server.address().port}`;
-
-await t('exchangeCodeForToken：回执已带 token 时直接返回（不发请求）', async () => {
-  const r = await exchangeCodeForToken(`${mockBase}/cowork/auth?code=C1&token=tok-in-url`);
-  assert.equal(r.ok, true);
-  assert.equal(r.via, 'url');
-  assert.equal(r.token, 'tok-in-url');
-});
-await t('exchangeCodeForToken：只有 code 时按桌面端身份逐跳取到 token', async () => {
-  const r = await exchangeCodeForToken(`${mockBase}/cowork/auth?code=C2`, { appVersion: '3.1.1.000' });
-  assert.equal(r.ok, true, r.reason || '');
-  assert.equal(r.via, 'redirect');
-  assert.equal(r.token, 'tok-from-redirect');
-});
-await t('exchangeCodeForToken：非回执 URL 直接拒绝', async () => {
-  const r = await exchangeCodeForToken(`${mockBase}/other`);
-  assert.equal(r.ok, false);
-  assert.equal(r.reason, 'not-cowork-auth-redirect');
-});
-server.close();
 
 console.log('== 存储层 ==');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ta-cred-test-'));
@@ -115,11 +61,15 @@ await t('ensureDeviceIdentity：无 fallback 时生成 12hex + UUID 并持久化
 });
 await t('save/load store 原子合并写', () => {
   saveCredentialStore(dir, { token: 'a', generation: 1 });
-  saveCredentialStore(dir, { cookies: { operationToken: 'Em9xR4:tok' } });
+  saveCredentialStore(dir, { source: 'dpapi' });
   const s = loadCredentialStore(dir);
   assert.equal(s.token, 'a');
   assert.equal(s.generation, 1);
-  assert.equal(s.cookies.operationToken, 'Em9xR4:tok', '后写入的字段不应覆盖已有字段');
+  assert.equal(s.source, 'dpapi', '后写入的字段不应覆盖已有字段');
+});
+await t('load store：文件不存在返回 null', () => {
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ta-cred-test3-'));
+  assert.equal(loadCredentialStore(empty), null);
 });
 
 console.log(`\n通过 ${passed} 项${failures.length ? `，失败 ${failures.length} 项` : '，全部通过'}`);

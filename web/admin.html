@@ -298,29 +298,13 @@
     <section class="card panel" id="authPanel" style="display:none">
       <div class="panel-head">
         <h2>登录态</h2>
-        <div style="display:flex; gap:8px;">
-          <button class="btn primary" id="authLoginBtn">登录账号</button>
-          <button class="btn" id="authLogoutBtn" title="清空凭据并停机，回到待登录态（用于验证登录流程/换账号）">退出登录</button>
-        </div>
       </div>
       <p class="desc" id="authSummary">加载中…</p>
-      <p class="desc" id="authCookieRow" style="display:none"></p>
       <div id="authBanner" style="display:none; padding:10px 14px; border-radius:10px; margin:8px 0 0; background:rgba(229,72,77,.12); color:#e5484d; font-size:13px;"></div>
-      <div id="cookieImportBox" style="margin-top:10px;">
-        <p class="desc" style="margin:0 0 6px;">
-          <b>用 Cookie 登录（推荐）</b>——粘贴后立刻可用，不需要开桌面端。<br>
-          <b>做法 A（最省事）</b>：浏览器登录官方站点后按 F12 → <b>Network</b> → 刷新一下 →
-          点任意一条发往 <code>teleai</code> 的请求 → 在 <b>Request Headers</b> 里找到
-          <code>cookie:</code>，复制冒号后面<b>整段</b>粘贴到下面（一次拿到两个值）。<br>
-          <b>做法 B</b>：F12 → <b>Application</b> → <b>Cookies</b> → <code>agent.teleai.com.cn</code>，
-          复制 <code>operationToken</code> 的值（形如 <code>Em9xR4:eyJhbGci…</code>），单独给它也能登录。
-        </p>
-        <div style="display:flex; gap:8px;">
-          <input id="cookieInput" style="flex:1; padding:8px 10px; border-radius:8px; border:1px solid var(--line, #ccc); font:12px/1.4 monospace; background:transparent; color:inherit;" placeholder="operToken=…; operationToken=…   或   Em9xR4:eyJhbGci…" autocomplete="off" spellcheck="false" />
-          <button class="btn primary" id="cookieImportBtn">导入并登录</button>
-        </div>
-        <p class="desc" id="cookieImportMsg" style="margin:6px 0 0;"></p>
-      </div>
+      <p class="desc" style="margin:10px 0 0; opacity:.72;">
+        凭据始终来自桌面版：在桌面版登录后反代自动接管；token 到期前在桌面版重新登录一次即可，
+        反代会在 60 秒内换成新 token。这里只做状态显示，不需要任何操作。
+      </p>
     </section>
 
     <section class="card panel">
@@ -519,41 +503,6 @@ curl http://127.0.0.1:8787/v1/chat/completions \
     </div>
     <div class="actions">
       <button class="btn primary" id="tOk">进入</button>
-    </div>
-  </div>
-</div>
-
-<div class="backdrop" id="mLogin">
-  <div class="modal wide">
-    <h3>登录 TeleAgent 账号</h3>
-    <p class="desc" style="margin:0 0 10px;">
-      <b>主通道：用 Cookie 登录。</b>
-      不需要抢时间复制地址栏，也不用管登录后被唤起客户端。
-    </p>
-    <ol class="desc" style="padding-left:20px; margin:0 0 10px;">
-      <li>点 <b>打开官方登录页</b>（新窗口），用短信验证码完成登录；跳进网页版 <code>/teleagent</code> 界面是正常现象。</li>
-      <li>在该窗口按 <b>F12</b> → <b>Network</b> → 刷新 → 点任意一条发往 teleai 的请求 →
-          <b>Request Headers</b> 里找到 <code>cookie:</code>，复制冒号后整段。</li>
-      <li>回到管理台「用 Cookie 登录」框粘贴 → 点<b>导入并登录</b>，token 立刻生效。</li>
-    </ol>
-    <p class="desc" style="color:#9aa0a6; font-size:12px; margin:0 0 10px;">
-      手机上没有 F12？在地址栏前加 <code>view-source:</code> 不方便的话，用电脑浏览器登录同一账号，
-      Cookie 与设备无关，可直接在电脑上取。
-    </p>
-    <div class="actions" style="margin-bottom:4px;">
-      <button class="btn primary" id="openLoginWin">打开官方登录页</button>
-      <button class="btn" id="clipBtn">读取剪贴板</button>
-      <button class="btn" id="gotoPasteBtn">我已复制，去粘贴</button>
-      <button class="btn" id="loginClose">关闭</button>
-    </div>
-    <hr style="border:0; border-top:1px solid rgba(255,255,255,.12); margin:16px 0;" />
-    <p class="desc" style="margin:0 0 6px;">
-      <b>备用：粘贴回执网址</b>（仅当你能拿到带 <code>token=</code> 的回执 URL 时用）。
-      桌面端 OAuth 链的回执页会立刻唤起客户端、且 code 一被浏览器加载即失效，通常拿不到。
-    </p>
-    <div class="formrow" style="margin-top:8px;">
-      <input class="input" id="pasteUrl" type="text" placeholder="https://.../superCowork/sapi/cowork/auth?code=...&token=..." />
-      <button class="btn" id="pasteSubmit">提交</button>
     </div>
   </div>
 </div>
@@ -1090,12 +1039,9 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 </script>
 
 <script>
-/* ---------- 登录态（Cookie 登录 / 退出登录 / 到期提醒，独立于上方主逻辑） ---------- */
+/* ---------- 登录态（只读：token 由桌面版提供并刷新） ---------- */
 (function () {
   var authVisible = false;
-  // 登录入口：桌面端同款 OAuth 直链（source=01）。网页版登录壳
-  // /meter/teleagent-login/login 登录完进 /teleagent，地址栏没有 token，抓不到凭据。
-  var loginPageUrl = 'https://agent.teleai.com.cn/meter/teleagent-login/login';
   var $a = function (id) { return document.getElementById(id); };
   var token = localStorage.getItem('ta_admin_token') || '';
   var esc = function (s) {
@@ -1109,21 +1055,15 @@ curl http://127.0.0.1:8787/v1/chat/completions \
     var p = function (n) { return String(n).padStart(2, '0'); };
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
   }
-  function authApi(path, opts) {
-    opts = opts || {};
+  function authApi(path) {
     var headers = { 'content-type': 'application/json' };
     if (token) headers['x-admin-token'] = token;
-    return fetch(path, {
-      method: opts.method || 'GET',
-      headers: headers,
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-    }).then(function (res) {
+    return fetch(path, { headers: headers }).then(function (res) {
       return res.json().then(function (data) { return { status: res.status, data: data }; });
     });
   }
   function renderAuth(st) {
     if (!authVisible) { authVisible = true; $a('authPanel').style.display = ''; }
-    if (typeof st.loginPageUrl === 'string' && st.loginPageUrl) loginPageUrl = st.loginPageUrl;
     var now = Date.now();
     var exp = st.tokenExpiresAt || 0;
     var days = exp ? (exp - now) / 86400000 : 0;
@@ -1132,189 +1072,34 @@ curl http://127.0.0.1:8787/v1/chat/completions \
     else if (!exp || days <= 0) { state = '已过期'; tone = '#e5484d'; }
     else if (days <= 3) { state = '即将到期'; tone = '#c58b00'; }
     else { state = '有效'; tone = '#30a46c'; }
-    // token 由桌面版刷新、反代只跟随（自管换发已移除，见 docs/nas-docker.md）
     $a('authSummary').innerHTML =
       '登录状态 <b style="color:' + tone + '">' + state + '</b>' +
       (exp ? ' · 到期 <b>' + fmtTs(exp) + '</b>（剩 ' + (days > 0 ? days.toFixed(1) + ' 天' : '已过期') + '）' : '') +
       '<br><span style="opacity:.72">凭据来源 ' + esc(st.source || 'none') +
       ' · 设备 <code>' + esc(st.deviceId || '—') + '</code>' +
-      ' · token 由桌面版刷新，反代自动跟随</span>';
+      (days > 0 ? ' · token 由桌面版刷新，反代自动跟随' : '') + '</span>';
     var banner = $a('authBanner');
     if (!st.hasToken) {
-      banner.textContent = '尚未登录：点「登录账号」完成一次登录（也可以直接把 Cookie 粘到下面）。';
-      banner.style.display = '';
+      banner.textContent = '尚未检测到凭据：先在桌面版登录一次，然后重启反代（或等它自己跟随）即可。';
       banner.style.background = 'rgba(229,72,77,.12)';
       banner.style.color = '#e5484d';
+      banner.style.display = '';
     } else if (exp && days <= 3) {
       banner.textContent = days <= 0
-        ? '⚠ token 已于 ' + fmtTs(exp) + ' 过期，上游会拒绝请求。请在桌面版重新登录，或在此粘贴 Cookie 重新导入。'
-        : '⏳ token 将于 ' + fmtTs(exp) + ' 到期（剩 ' + days.toFixed(1) + ' 天）。到期前在桌面版重新登录一次即可，反代会自动跟随；不想开桌面版就粘贴一次 Cookie。';
-      banner.style.display = '';
+        ? '⚠ token 已于 ' + fmtTs(exp) + ' 过期，上游会拒绝请求。在桌面版重新登录一次即可恢复。'
+        : '⏳ token 将于 ' + fmtTs(exp) + ' 到期（剩 ' + days.toFixed(1) + ' 天）。到期前在桌面版重新登录一次，反代会在 60 秒内跟上。';
       banner.style.background = days <= 0 ? 'rgba(229,72,77,.12)' : 'rgba(197,139,0,.12)';
       banner.style.color = days <= 0 ? '#e5484d' : '#c58b00';
+      banner.style.display = '';
     } else {
       banner.style.display = 'none';
     }
-    // 平台 Cookie：只作为「换机/重登时可复用」的附加信息，不参与换取 token
-    var pc = st.platformCookies || {};
-    var names = [];
-    if (pc.operToken) names.push('operToken');
-    if (pc.operationToken) names.push('operationToken');
-    var row = $a('authCookieRow');
-    row.style.display = '';
-    row.innerHTML = names.length
-      ? '平台 Cookie：<b>已保存</b>（' + esc(names.join('、')) + '）'
-      : '平台 Cookie：<b style="opacity:.7">未保存</b>（不影响对话）';
-    $a('cookieImportBox').style.display = '';
   }
   function loadAuth() {
     authApi('/admin/api/auth').then(function (r) {
       if (r.status === 200 && r.data && 'hasToken' in r.data) renderAuth(r.data);
     }).catch(function () {});
   }
-  function importCookie(silent) {
-    var raw = $a('cookieInput').value.trim();
-    if (!raw) { if (!silent) $a('cookieImportMsg').textContent = '请先粘贴 Cookie 字符串'; return; }
-    $a('cookieImportBtn').disabled = true;
-    authApi('/admin/api/auth/cookies', { method: 'POST', body: { cookie: raw } }).then(function (r) {
-      $a('cookieImportBtn').disabled = false;
-      if (r.status === 200 && r.data && r.data.ok) {
-        var d = r.data;
-        $a('cookieImportMsg').textContent = d.login
-          ? '✓ 已登录：generation ' + d.generation + '，内核正在拉起'
-          : (d.message || '已保存 Cookie');
-        $a('cookieInput').value = '';
-        loadAuth();
-      } else {
-        $a('cookieImportMsg').textContent = (r.data && r.data.error) || '导入失败';
-      }
-    }).catch(function () { $a('cookieImportBtn').disabled = false; $a('cookieImportMsg').textContent = '导入请求失败'; });
-  }
-  $a('cookieImportBtn').addEventListener('click', function () { importCookie(false); });
-  // 退出登录：清空凭据 → 停机 → 回到待登录态。二次确认，避免误点把在跑的会话断掉。
-  $a('authLogoutBtn').addEventListener('click', function () {
-    if (!window.confirm('退出登录会清空本机凭据并停掉内核，需要重新登录才能恢复服务。确定继续？')) return;
-    $a('authLogoutBtn').disabled = true;
-    authApi('/admin/api/auth/logout', { method: 'POST' }).then(function (r) {
-      $a('authLogoutBtn').disabled = false;
-      if (r.status === 200 && r.data && r.data.ok) {
-        var b = $a('authBanner');
-        b.textContent = 'ℹ 已退出登录：凭据已清空，内核已停机。请用「登录账号」重新登录。';
-        b.style.display = '';
-        loadAuth();
-      } else {
-        window.alert((r.data && r.data.error) || '退出登录失败');
-      }
-    }).catch(function () { $a('authLogoutBtn').disabled = false; });
-  });
-  function submitUrl(url) {
-    if (!url) return;
-    authApi('/admin/api/auth/login', { method: 'POST', body: { url: url } }).then(function (r) {
-      if (r.status === 200 && r.data && r.data.ok) {
-        $a('pasteUrl').value = '';
-        $a('mLogin').classList.remove('show');
-        loadAuth();
-      } else {
-        window.alert((r.data && r.data.error) || '提交失败');
-      }
-    });
-  }
-  // 登录入口必须与桌面端一致：直接开官方登录页，不附加任何参数。
-  // 官方登录壳在无 source 参数时按桌面模式走：/superCowork/sapi/cowork/auth -> teleai 授权
-  // -> 回执页 .../auth?code=…&token=…（token 只出现在回执页地址栏，不经过 redirect_url）。
-  function buildLoginUrl() {
-    return loginPageUrl;
-  }
-  $a('authLoginBtn').addEventListener('click', function () {
-    $a('mLogin').classList.add('show');
-    loadAuth();
-  });
-  $a('openLoginWin').addEventListener('click', function () {
-    var w = window.open(buildLoginUrl(), 'ta_login', 'width=520,height=720');
-    if (!w) window.alert('浏览器拦截了弹窗，请允许本站弹窗后重试。');
-    else loginWinOpened = true;
-  });
-  $a('loginClose').addEventListener('click', function () {
-    $a('mLogin').classList.remove('show');
-  });
-  $a('pasteSubmit').addEventListener('click', function () { submitUrl($a('pasteUrl').value.trim()); });
-
-  // http://NAS_IP 属于非安全上下文，navigator.clipboard 不可用；
-  // 所以主通道是「粘贴即提交」——Ctrl+V 一下就不用再点按钮。
-  $a('pasteUrl').addEventListener('paste', function (ev) {
-    var t = (ev.clipboardData || window.clipboardData);
-    if (!t) return;
-    var s = String(t.getData('text') || '').trim();
-    if (!s) return;
-    ev.preventDefault();
-    $a('pasteUrl').value = s;
-    if (looksLikeReceipt(s)) submitUrl(s);
-  });
-
-  // 回执网址形如 https://agent.teleai.com.cn/superCowork/sapi/cowork/auth?code=…&token=…
-  var lastClipSubmitted = '';
-  function looksLikeReceipt(text) {
-    return typeof text === 'string' && text.indexOf('/cowork/auth') !== -1 && text.indexOf('token=') !== -1;
-  }
-  function looksLikeCookie(s) {
-    return /operationToken=|operToken=/.test(s) ||
-      /^[^:\s]+:eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test(s) ||
-      /^eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test(s);
-  }
-  function submitFromClipboard(silent) {
-    if (!navigator.clipboard || !navigator.clipboard.readText) {
-      if (!silent) {
-        window.alert(
-          '当前页面不是安全上下文（http:// 访问非 localhost 时浏览器禁用剪贴板读取）。\n' +
-          '请把 operationToken 直接粘贴到下方「用 Cookie 登录」输入框，粘贴后点「导入并登录」。'
-        );
-      }
-      return;
-    }
-    navigator.clipboard.readText().then(function (t) {
-      var s = String(t || '').trim();
-      if (looksLikeCookie(s)) {
-        $a('cookieInput').value = s;
-        importCookie(true);
-        return;
-      }
-      if (!looksLikeReceipt(s)) {
-        if (!silent) window.alert('剪贴板里既不是 Cookie（operationToken=…）也不是登录回执网址。请先复制 operationToken 的值。');
-        return;
-      }
-      if (s === lastClipSubmitted) return;
-      lastClipSubmitted = s;
-      submitUrl(s);
-    }).catch(function () {
-      if (!silent) window.alert('浏览器拒绝了剪贴板访问，请手动粘贴到下方输入框。');
-    });
-  }
-  $a('clipBtn').addEventListener('click', function () { submitFromClipboard(false); });
-  $a('gotoPasteBtn').addEventListener('click', function () {
-    $a('mLogin').classList.remove('show');
-    var el = $a('cookieInput');
-    if (el) {
-      el.scrollIntoView({ block: 'center' });
-      el.focus();
-    }
-  });
-
-  // 从登录窗口切回本页时，顺手试一次（多数浏览器要求用户手势才会授权，失败就静默）
-  var loginWinOpened = false;
-  window.addEventListener('focus', function () {
-    if (!loginWinOpened) return;
-    if (!$a('mLogin').classList.contains('show')) return;
-    submitFromClipboard(true);
-  });
-  window.addEventListener('message', function (ev) {
-    var d = ev.data;
-    if (!d) return;
-    // 回调页写入成功后通知本页立即刷新状态
-    if (d.type === 'ta-login-done') { loadAuth(); return; }
-    // 兼容：若官方页面主动向父窗口回传回跳网址
-    if (d.type !== 'loginRedirect' || typeof d.url !== 'string') return;
-    submitUrl(d.url);
-  });
   loadAuth();
   setInterval(function () { if (!document.hidden) loadAuth(); }, 15000);
 })();

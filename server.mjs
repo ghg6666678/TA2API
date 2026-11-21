@@ -15,8 +15,6 @@ import {
   ensureDeviceIdentity,
   loadCredentialStore,
   saveCredentialStore,
-  extractLoginResult,
-  exchangeCodeForToken,
   jwtExpiresAt,
   tokenIat,
 } from './lib/credentials.mjs';
@@ -29,7 +27,7 @@ import { createKeyStore } from './lib/keystore.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const missing = ensureTeleAgentLayout();
 // Local State 只服务于 DPAPI 解密（桌面端兼容通道）——NAS 登录优先路径没有它也能跑，
-// 不能因为缺它而拒绝启动（凭据库/管理台登录才是 NAS 主通道）。
+// 不能因为缺它而拒绝启动（自管凭据库里有 token 也能跑）。
 const fatalMissing = missing.filter((f) => f !== LOCAL_STATE_FILE);
 if (fatalMissing.length > 0) {
   console.error('找不到 TeleAgent 安装/内核信息：\n  ' + fatalMissing.join('\n  '));
@@ -37,26 +35,12 @@ if (fatalMissing.length > 0) {
   process.exit(1);
 }
 if (missing.length > fatalMissing.length) {
-  console.warn('[teleagent] 无桌面端 Local State：DPAPI 通道不可用，将依赖凭据库或管理台登录。');
+  console.warn('[teleagent] 无桌面端 Local State：DPAPI 通道不可用，将回退到自管凭据库。');
 }
 
 const owner = resolveOwner();
 const runtimeRoot = path.join(here, 'runtime');
 
-// 登录入口 = 官方网页版登录页。
-//
-// 为什么不走桌面端的 OAuth 直链（.../cowork/auth?source=01）：
-//   那条链授权完成后停在回执页 .../cowork/auth?appVersion=&code=ucc.…，
-//   页面会立刻尝试唤起 teleagent:// 客户端，且 code 在浏览器加载那一刻就被消费，
-//   既来不及复制、复制来也换不出 token（2026-11-21 三次实测均为 400 get token error）。
-//
-// 现在的主通道是「用 Cookie 登录」：网页版登录完成后浏览器里会有
-//   operToken + operationToken（= `<tenant>:<accessToken>`，其中 accessToken 与凭据库的
-//   token 逐字节相同），把它粘贴进管理台即可同时完成「登录 + 续期凭据导入」。
-// 网页版登录页登录后会进 https://agent.teleai.com.cn/teleagent —— 这是预期行为，Cookie 已生成。
-//
-// TA_LOGIN_PAGE_URL 可覆盖（官方改域名时用）。
-const DEFAULT_LOGIN_PAGE_URL = 'https://agent.teleai.com.cn/meter/teleagent-login/login';
 
 // 凭据来源：桌面版登录态（dpapi）为权威——桌面版每次换发都会重写 token.json，
 // 下面的跟随 watcher 检测到变化就热换核。自管换发已移除（服务端只认官方客户端，
@@ -64,7 +48,7 @@ const DEFAULT_LOGIN_PAGE_URL = 'https://agent.teleai.com.cn/meter/teleagent-logi
 
 // 凭据来源优先级：桌面版 token.json（dpapi）> 自管凭据库（管理台粘 Cookie 登录写入的）。
 // store.json 里的 token 在桌面版换发后会滞后，不能遮蔽 dpapi 这条权威来源；
-// 两者皆无也允许启动——管理台登录后即可拉起内核。
+// 两者皆无也允许启动——登录桌面版后重启反代即可。
 const device = ensureDeviceIdentity(runtimeRoot, deviceMeta());
 let storedCredentials = loadCredentialStore(runtimeRoot);
 let auth = null;
@@ -86,7 +70,7 @@ async function loadPrimaryAuth() {
 }
 ({ auth, source: authSource } = await loadPrimaryAuth());
 if (!auth?.token) {
-  console.warn('[teleagent] 尚未登录：内核暂不启动。请打开管理台完成登录，或在 PC 上完成一次桌面端登录。');
+  console.warn('[teleagent] 尚未登录：内核暂不启动。请先在 TeleAgent 桌面版登录一次，再重启反代。');
 }
 
 const catalog = readJson(path.join(accountDir(owner), 'model-catalog.json'), null);
@@ -156,7 +140,7 @@ if (authState.token) {
   kernelInfo = { client: 'neutral', ...(await verifyKernelPrompt(kernel, NEUTRAL_AGENT_PROMPT)) };
   console.log(`[teleagent] 内核提示词：中性兜底 · ${kernelInfo.promptChars} 字符 · 校验 ${kernelInfo.verified === true ? '通过' : kernelInfo.verified === null ? '不可读' : '未通过'}`);
 } else {
-  console.warn('[teleagent] 跳过内核预启动（未登录）——管理台登录完成后将自动拉起。');
+  console.warn('[teleagent] 跳过内核预启动（未登录）——检测到凭据后会自动拉起。');
 }
 
 const bridge = await createToolBridge({ kernel });
@@ -243,7 +227,7 @@ function forceRestartKernel(reason) {
 
 async function getKernel({ key, prompt }) {
   lastAsk = { key, prompt };
-  // 未登录（刚启动 / 管理台退出登录后）时别去起一个没有凭据的内核——
+  // 未登录（刚启动 / 凭据被清空后）时别去起一个没有凭据的内核——
   // 那样只会拿上游的 40108 invalid token 当答案，看不出真正原因。
   if (!authState.token) {
     const err = new Error('尚未登录：请在管理台 /admin 点「登录账号」完成一次登录');
@@ -306,10 +290,6 @@ let authStatus = {
   needLogin: authState.token ? null : '尚未登录',
 };
 
-// 平台 Cookie 对（operToken/operationToken）：只作登录通道的副产品保存与展示，
-// 不再参与任何换发（换发能力已移除）。
-let cookiesCache = storedCredentials?.cookies ?? null;
-
 /* ----------------------------------------------------------------
  * 跟随 watcher：桌面版每次换发成功都会重写 token.json，
  * watcher 定期对比文件指纹；变化才走 DPAPI 解密并按 JWT iat 比较——
@@ -366,195 +346,6 @@ const follower = setInterval(() => {
 }, Math.max(30_000, Number(process.env.TA_FOLLOW_INTERVAL_MS || 60_000)));
 follower.unref?.();
 
-/**
- * 管理台登录：接收登录回跳网址，提取 token → 落库 → 换核。
- *
- * 浏览器拿到的回执常常**只有 code 没有 token**（服务端把签发那一跳交给桌面客户端）。
- * 此时按桌面端身份自己请求一次回执地址，逐跳找 token——见 exchangeCodeForToken。
- */
-async function applyLoginToken(token, { via = 'login' } = {}) {
-  const next = saveCredentialStore(runtimeRoot, {
-    token,
-    tokenIssuedAt: Date.now(),
-    tokenExpiresAt: jwtExpiresAt(token),
-    absoluteExpiresAt: null,
-    generation: (storedCredentials?.generation ?? 0) + 1,
-    source: via,
-    lastAttemptDay: '',
-  });
-  storedCredentials = next;
-  authState.token = token;
-  authSource = 'credentials';
-  authStatus = {
-    source: 'credentials',
-    generation: next.generation,
-    tokenExpiresAt: next.tokenExpiresAt,
-    absoluteExpiresAt: null,
-    lastAttempt: null,
-    needLogin: null,
-  };
-  await forceRestartKernel(`token 已更新（${via}），拉起内核`);
-  console.log(
-    `[teleagent] ${via} 成功：generation=${next.generation} · token 到期 ${
-      next.tokenExpiresAt ? new Date(next.tokenExpiresAt).toLocaleString() : '未知'
-    }`,
-  );
-  return next;
-}
-
-async function handleAdminLogin(rawUrl) {
-  const extracted = extractLoginResult(rawUrl);
-  if (!extracted.ok) {
-    return { ok: false, error: '这不是登录回跳网址：应包含 /cowork/auth 路径与 code/token 参数' };
-  }
-  if (!extracted.token) {
-    console.log('[teleagent] 回执只有 code，按桌面端身份尝试换取 token…');
-    const ex = await exchangeCodeForToken(rawUrl, {
-      deviceId: authState.deviceId,
-      appVersion: kernelVersion() || '',
-      osType: process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : process.platform,
-    });
-    if (!ex.ok) {
-      return {
-        ok: false,
-        error:
-          `回执里只有 code，反代按桌面端身份换取 token 失败（${ex.reason}）` +
-          (ex.detail ? `：${ex.detail}` : '') +
-          '。该 code 很可能已被浏览器那次访问消费掉——请在登录授权后不要等待页面加载，' +
-          '立刻复制地址栏网址（或在新窗口登录后直接复制，不要刷新）。',
-      };
-    }
-    console.log(`[teleagent] 用 code 换到 token（via ${ex.via}${ex.hops ? ` / ${ex.hops} 跳` : ''}）`);
-    extracted.token = ex.token;
-  }
-  const next = await applyLoginToken(extracted.token, { via: 'login' });
-  return {
-    ok: true,
-    generation: next.generation,
-    tokenExpiresAt: next.tokenExpiresAt,
-  };
-}
-
-/**
- * 管理台退出登录：清空 token（保留 Cookie 对），停掉内核，回到「待登录」态。
- *
- * 用途：① 验证登录流程是否真能走通（不必先手工删文件）；② 换账号；
- * ③ 凭据异常时重置到干净状态。Cookie 对保留是因为它属于浏览器会话，
- * 换 token 时仍可复用（重新登录后若失效，再导入一次即可）。
- */
-function handleAdminLogout() {
-  const had = Boolean(authState.token);
-  if (bridge.hasCalls()) bridge.cancel('退出登录');
-  authState.token = '';
-  storedCredentials = saveCredentialStore(runtimeRoot, {
-    token: '',
-    tokenIssuedAt: 0,
-    tokenExpiresAt: 0,
-    absoluteExpiresAt: null,
-    source: 'logged-out',
-  });
-  authSource = 'none';
-  authStatus = {
-    ...authStatus,
-    source: 'none',
-    tokenExpiresAt: null,
-    absoluteExpiresAt: null,
-    needLogin: '已退出登录：请用「登录账号」重新登录',
-  };
-  // 没有 token 时内核无法提供服务，留着只会让请求 401 并被看门狗反复重起
-  try {
-    kernel?.close();
-  } catch {}
-  kernel = null;
-  kernelKey = 'default';
-  kernelInfo = { client: 'default', promptChars: 0, promptSha: null, verified: null };
-  resetSessions();
-  console.log('[teleagent] 已退出登录：凭据已清空，内核已停机，等待重新登录');
-  return { ok: true, hadToken: had, status: { ...authStatus, hasToken: false } };
-}
-
-/** 管理台导入 Cookie：粘贴 Cookie 头、整段请求头、或 Application 面板里的单个值都行。 */
-function parseCookieHeader(raw) {
-  const text = String(raw ?? '').trim();
-  const out = {};
-  if (!text) return out;
-  for (const part of text.split(/[;\n\r]/)) {
-    const eq = part.indexOf('=');
-    if (eq <= 0) continue;
-    const name = part.slice(0, eq).trim();
-    const value = part.slice(eq + 1).trim().replace(/^"|"$/g, '');
-    if ((name === 'operToken' || name === 'operationToken') && value) out[name] = value;
-    // 整段请求头粘贴：Cookie: operToken=...
-    if (name.toLowerCase() === 'cookie') {
-      Object.assign(out, parseCookieHeader(value));
-    }
-  }
-  if (out.operToken || out.operationToken) return out;
-  // 裸值：<tenant>:<jwt> 是 operationToken；单独一段 JWT 视长度区分
-  const bare = text.replace(/^"|"$/g, '');
-  if (/^[^:\s]+:eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test(bare)) out.operationToken = bare;
-  else if (/^eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test(bare)) {
-    if (bare.length >= 400) out.operationToken = bare; // accessToken 裸用，tenant 前缀缺失时下面兜底
-    else out.operToken = bare;
-  }
-  return out;
-}
-
-/**
- * operationToken = `<tenant>:<accessToken>`，而 accessToken 与凭据库里的 token 完全一致
- * （2026-11-21 实测：639 字节逐字节相同）。因此只要拿到 operationToken 就等于拿到可用 token，
- * 不需要 OAuth code——这是 NAS 上唯一可行的登录通道。
- */
-function accessTokenFromCookies(cookies) {
-  const opt = cookies?.operationToken;
-  if (!opt) return null;
-  const i = opt.indexOf(':');
-  const acc = i > 0 ? opt.slice(i + 1) : opt;
-  return acc.startsWith('eyJ') && acc.split('.').length === 3 ? acc : null;
-}
-
-async function handleCookieImport(raw) {
-  const parsed = parseCookieHeader(raw);
-  const token = accessTokenFromCookies(parsed);
-  if (!parsed.operToken && !parsed.operationToken) {
-    return {
-      ok: false,
-      error:
-        '未识别出 operToken / operationToken。可以粘贴三种形式之一：① 完整 Cookie 头（operationToken=xxx; operToken=yyy）' +
-        '② F12 → Application → Cookies 里 operationToken 的整段值（形如 Em9xR4:eyJ…）③ 只有 access token 的 JWT。',
-    };
-  }
-  cookiesCache = { ...(cookiesCache ?? {}), ...parsed };
-  storedCredentials = saveCredentialStore(runtimeRoot, { cookies: cookiesCache });
-  if (!token) {
-    return {
-      ok: true,
-      imported: Object.keys(parsed),
-      login: false,
-      cookies: cookieStatus(),
-      message:
-        '已保存 Cookie 用于自动续期，但没能从中解析出 token。' +
-        '请确认粘贴的是 operationToken 的完整值（带 `<租户>:<token>` 前缀）。',
-    };
-  }
-  const next = await applyLoginToken(token, { via: 'cookie' });
-  return {
-    ok: true,
-    imported: Object.keys(parsed),
-    login: true,
-    generation: next.generation,
-    tokenExpiresAt: next.tokenExpiresAt,
-    cookies: cookieStatus(),
-  };
-}
-function cookieStatus() {
-  return {
-    operToken: Boolean(cookiesCache?.operToken),
-    operationToken: Boolean(cookiesCache?.operationToken),
-    source: cookiesCache ? 'store' : null,
-  };
-}
-
 const shim = await createShim({
   getKernel,
   kernelStatus: () => ({ origin: kernel?.origin ?? null, ...kernelInfo }),
@@ -564,21 +355,14 @@ const shim = await createShim({
   keystore,
   adminToken,
   host: process.env.TA_HOST || '127.0.0.1',
+  // 只读状态：token 由桌面版提供并刷新，管理台不提供任何登录动作。
   authApi: {
     status: () => ({
       ...authStatus,
       hasToken: Boolean(authState.token),
-      // deviceId/installId 是设备标识不是凭据，管理台展示用
       deviceId: authState.deviceId,
       installId: authState.installId,
-      // 换发会话 Cookie 对的存在性（不回显值）：NAS 判断「能否自续期」的关键指标
-      platformCookies: cookieStatus(),
-      // 官方登录页地址：内置默认值，TA_LOGIN_PAGE_URL 可覆盖（官方换域名时无需改代码）。
-      loginPageUrl: process.env.TA_LOGIN_PAGE_URL || DEFAULT_LOGIN_PAGE_URL,
     }),
-    login: handleAdminLogin,
-    logout: handleAdminLogout,
-    setCookies: handleCookieImport,
   },
   port: Number(process.env.TA_PORT || 8787),
 });
