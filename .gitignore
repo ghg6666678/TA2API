@@ -25,3 +25,7 @@ notes/
 __pycache__/
 .pytest_cache/
 node_modules/
+
+# 编辑期的临时备份（*.bak-20261120-172945 这类）
+*.bak
+*.bak-*
