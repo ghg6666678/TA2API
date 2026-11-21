@@ -89,7 +89,7 @@ GET  /admin/api/points/usage
 
 ---
 
-## 三、协议与兼容细节（README「已知限制」）
+## 三、协议与兼容细节（对应 docs/ARCHITECTURE.md「已知限制」）
 
 | # | 项 | 文档表述 | 现状 |
 |---|---|---|---|
@@ -99,6 +99,20 @@ GET  /admin/api/points/usage
 | 17 | 多模态图片输入 | 未提及 | `image_url` 未处理 |
 | 18 | Embeddings | 未提及 | 无 `/v1/embeddings` |
 | 19 | macOS 支持 | 「路径预留，未实测」 | 仅 Windows 验证 |
+| 20 | 模型名别名路由 | 未提及 | **完全缺失**：`/v1/chat/completions` 对模型名严格校验（`lib/shim.mjs`），写 `gpt-4o` / `claude-sonnet-*` 直接 `400 unknown model`，必须手改成 `chat-*`。`/v1/messages` 走 `includes` 匹配、未命中则落 `TA_DEFAULT_MODEL`（默认目录第一个，通常 `chat-pro`），与前者行为不一致。方案见下方备注 |
+
+**备注：模型名兼容层（尚未实现，方案已定）**
+
+目标：客户端写别家的模型名也能直接用，不用每次手改。
+
+- 四层解析：① 精确命中真实模型 → ② 精确别名表 → ③ 关键词包含（**按匹配串长度降序**，
+  否则 `gpt-4o-mini` 会先被 `gpt-4o` 抢走）→ ④ 兜底（报错或落默认模型）。
+- 规则表放 `runtime/config/model-routes.json`，不写死。当前 Claude / GPT 的对应关系参考：
+  `fable`→flagship、`opus`→pro、`sonnet`/`haiku`→flash；`astra`→flagship、`sol`→pro、`luna`→flash。
+- 三协议共用同一个 `resolveModel()`：`lib/shim.mjs` 的严格校验、`lib/anthropic.mjs` 的
+  `includes` 兜底、`lib/responses.mjs` 一起换成它。
+- 两个开关：`TA_MODEL_ROUTE=0` 全局透传（便于 A/B 对比）、`TA_MODEL_FALLBACK=strict|default`。
+- 坑：**模型名不能参与会话指纹**，否则同一段对话换个别名就新建会话、历史断掉。
 
 ---
 
