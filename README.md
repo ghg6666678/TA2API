@@ -34,7 +34,7 @@ TeleAgent 上游  https://agent.teleai.com.cn/superCowork/sapi/api/v1
 |---|---|
 | [docs/CLIENTS.md](docs/CLIENTS.md) | **客户端接入**：OpenAI SDK / WorkBuddy 等图形客户端 / DSH / curl / Codex CLI / CC Switch 一键注册，含工具调用开关与实测记录 |
 | [docs/CONFIG.md](docs/CONFIG.md) | **配置参考**：全部环境变量（分服务 / 管理台 / 内核 / 凭据 / 调试五组）、获取上游 gateway key、提示词优先级与自检 |
-| [docs/ADMIN.md](docs/ADMIN.md) | **Web 管理台**：六块面板能做什么、密钥存储与安全边界 |
+| [docs/ADMIN.md](docs/ADMIN.md) | **Web 管理台**：各面板能做什么、登录态与到期提醒、密钥存储与安全边界 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | **架构与内部机制**：请求链路、模块地图、内核生命周期、事件流、工具桥、登录态解密、已知限制、升级排查清单 |
 | [docs/RELIABILITY.md](docs/RELIABILITY.md) | **稳定性**：内核看门狗、先起后换、会话 TTL、已知稳定性边界、排障速查 |
 | [docs/nas-docker.md](docs/nas-docker.md) | **为什么没有 Docker / NAS 方案**：容器化路线的实测依据、已排除项与现在的替代用法 |
@@ -132,7 +132,7 @@ CC Switch 一键注册命令，全部在 **[docs/CLIENTS.md](docs/CLIENTS.md)**�
 | PATCH / DELETE | `/admin/api/keys/:id` | 改名/备注/有效期/启停、删除单把 |
 | POST | `/admin/api/keys/bulk` | 批量 `enable` / `disable` / `reset` / `delete` |
 | POST | `/admin/api/settings` | 切换鉴权模式 `auto` / `on` / `off` |
-| GET·POST | `/admin/api/auth*` | 登录态：Cookie 导入登录、退出登录、手动续期 |
+| GET·POST | `/admin/api/auth*` | 登录态：状态查询、Cookie 导入登录、退出登录 |
 
 行为约定：
 

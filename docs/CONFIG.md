@@ -39,22 +39,27 @@
 | `TA_ALLOW_KERNEL_TOOLS` | 关 | 设为 `1` 放行 kernel 自带的 bash/read/write 等工具（默认全禁） |
 | `TA_WATCHDOG_MS` | `15000` | 内核看门狗间隔（毫秒）：进程退出即重启；也是「空闲时内核死了也会自己起来」的检查周期 |
 
-### 凭据与续期
+### 凭据
+
+PC 上 token 由桌面版刷新，反代只**跟随**（每 60s 比对一次桌面版 `token.json`，变了就换核）。
+以下变量基本不用动，列出来是为了排障时有据可查。
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `TA_RENEW_MODE` | 自动判定 | `nas` / `gui`。`gui`=跟随桌面版 token（不自行换发）；`nas`=自管换发。不设则按是否存在桌面端数据目录自动判定 |
-| `TA_RENEW_INTERVAL_MS` | `21600000`（6h） | 自管换发的检查间隔；`0` = 关闭自动换发（只保留管理台按钮） |
-| `TA_RENEW_STARTUP_DELAY_MS` | `15000` | 启动后延迟多久做首次换发检查 |
-| `TA_FOLLOW_INTERVAL_MS` | `60000` | `gui` 模式下比对桌面版 token 指纹的间隔 |
-| `TA_AUTH_BASE_URL` | 官方网关 | 换发接口 base URL 覆盖 |
-| `TA_AUTH_APP_VERSION` | `3.1.1.000` | 换发请求头 `X-App-Version` 的取值 |
+| `TA_FOLLOW_INTERVAL_MS` | `60000` | 跟随模式下比对桌面版 token 指纹的间隔 |
+| `TA_RENEW_MODE` | 自动判定 | `gui`=跟随桌面版（PC 上的正常状态）；`nas`=自管换发（**实测不可用**，保留仅作协议参考） |
+| `TA_RENEW_INTERVAL_MS` | `21600000`（6h） | 仅 `nas` 模式下生效的换发检查间隔；`0` = 关闭 |
+| `TA_RENEW_STARTUP_DELAY_MS` | `15000` | 仅 `nas` 模式：启动后延迟多久做首次换发检查 |
+| `TA_AUTH_BASE_URL` | 官方网关 | 换发接口 base URL 覆盖（协议研究用） |
+| `TA_AUTH_APP_VERSION` | `3.1.1.000` | 换发请求头 `X-App-Version` 的取值（协议研究用） |
 | `TA_LOGIN_PAGE_URL` | 内置官方登录页 | 仅覆盖管理台「打开官方登录页」的地址（官方换域名时用） |
 
-> ⚠ **自管换发（`nas` 模式）在容器/NAS 中实测不可用**：服务端只接受官方桌面客户端
-> 发出的换发请求，第三方 HTTP 客户端（Node / curl / Chromium 均实测）一律返回
-> `40115 session not found`。详见 [nas-docker.md](nas-docker.md)。
-> PC 上用 `gui` 模式跟随桌面版，或按 token 到期日重新导入凭据。
+> ⚠ **自管换发（`nas` 模式）不可用**：服务端只接受官方桌面客户端发出的换发请求，
+> 第三方 HTTP 客户端（Node / curl / Chromium 均实测）一律返回 `40115 session not found`。
+> 管理台也已不再提供「手动续期」按钮。详见 [nas-docker.md](nas-docker.md)。
+>
+> 所以凭据的日常运维只有两种：**桌面版自己续**（推荐），或 token 到期前在管理台
+> 「用 Cookie 登录」粘一次。
 
 ### 调试
 

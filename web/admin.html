@@ -297,9 +297,8 @@
 
     <section class="card panel" id="authPanel" style="display:none">
       <div class="panel-head">
-        <h2>登录态与自动续期</h2>
+        <h2>登录态</h2>
         <div style="display:flex; gap:8px;">
-          <button class="btn" id="authRenewBtn">手动续期</button>
           <button class="btn primary" id="authLoginBtn">登录账号</button>
           <button class="btn" id="authLogoutBtn" title="清空凭据并停机，回到待登录态（用于验证登录流程/换账号）">退出登录</button>
         </div>
@@ -309,13 +308,12 @@
       <div id="authBanner" style="display:none; padding:10px 14px; border-radius:10px; margin:8px 0 0; background:rgba(229,72,77,.12); color:#e5484d; font-size:13px;"></div>
       <div id="cookieImportBox" style="margin-top:10px;">
         <p class="desc" style="margin:0 0 6px;">
-          <b>用 Cookie 登录（推荐）</b>——导入后立刻可用，同时写入换发所需的 Cookie。<br>
+          <b>用 Cookie 登录（推荐）</b>——粘贴后立刻可用，不需要开桌面端。<br>
           <b>做法 A（最省事）</b>：浏览器登录官方站点后按 F12 → <b>Network</b> → 刷新一下 →
           点任意一条发往 <code>teleai</code> 的请求 → 在 <b>Request Headers</b> 里找到
           <code>cookie:</code>，复制冒号后面<b>整段</b>粘贴到下面（一次拿到两个值）。<br>
           <b>做法 B</b>：F12 → <b>Application</b> → <b>Cookies</b> → <code>agent.teleai.com.cn</code>，
-          复制 <code>operationToken</code> 的值（形如 <code>Em9xR4:eyJhbGci…</code>）。
-          只给它也能登录，但自动续期建议连 <code>operToken</code> 一起给。
+          复制 <code>operationToken</code> 的值（形如 <code>Em9xR4:eyJhbGci…</code>），单独给它也能登录。
         </p>
         <div style="display:flex; gap:8px;">
           <input id="cookieInput" style="flex:1; padding:8px 10px; border-radius:8px; border:1px solid var(--line, #ccc); font:12px/1.4 monospace; background:transparent; color:inherit;" placeholder="operToken=…; operationToken=…   或   Em9xR4:eyJhbGci…" autocomplete="off" spellcheck="false" />
@@ -529,14 +527,14 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   <div class="modal wide">
     <h3>登录 TeleAgent 账号</h3>
     <p class="desc" style="margin:0 0 10px;">
-      <b>主通道：用 Cookie 登录（一步同时搞定登录 + 自动续期）。</b>
+      <b>主通道：用 Cookie 登录。</b>
       不需要抢时间复制地址栏，也不用管登录后被唤起客户端。
     </p>
     <ol class="desc" style="padding-left:20px; margin:0 0 10px;">
       <li>点 <b>打开官方登录页</b>（新窗口），用短信验证码完成登录；跳进网页版 <code>/teleagent</code> 界面是正常现象。</li>
       <li>在该窗口按 <b>F12</b> → <b>Network</b> → 刷新 → 点任意一条发往 teleai 的请求 →
           <b>Request Headers</b> 里找到 <code>cookie:</code>，复制冒号后整段。</li>
-      <li>回到管理台「用 Cookie 登录」框粘贴 → 点<b>导入并登录</b>。token 立刻生效；换发用的 Cookie 也一并写入。</li>
+      <li>回到管理台「用 Cookie 登录」框粘贴 → 点<b>导入并登录</b>，token 立刻生效。</li>
     </ol>
     <p class="desc" style="color:#9aa0a6; font-size:12px; margin:0 0 10px;">
       手机上没有 F12？在地址栏前加 <code>view-source:</code> 不方便的话，用电脑浏览器登录同一账号，
@@ -1092,7 +1090,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 </script>
 
 <script>
-/* ---------- 登录态 / 自动续期（NAS 自给自足通道，独立于上方主逻辑） ---------- */
+/* ---------- 登录态（Cookie 登录 / 退出登录 / 到期提醒，独立于上方主逻辑） ---------- */
 (function () {
   var authVisible = false;
   // 登录入口：桌面端同款 OAuth 直链（source=01）。网页版登录壳
@@ -1126,71 +1124,48 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   function renderAuth(st) {
     if (!authVisible) { authVisible = true; $a('authPanel').style.display = ''; }
     if (typeof st.loginPageUrl === 'string' && st.loginPageUrl) loginPageUrl = st.loginPageUrl;
-    var remain = st.hasToken ? 'token 有效' : '未登录';
-    if (st.tokenExpiresAt) {
-      var days = (st.tokenExpiresAt - Date.now()) / 86400000;
-      remain = days > 0 ? 'token 剩余 ' + days.toFixed(1) + ' 天' : 'token 已过期';
-    }
-    var abs = st.absoluteExpiresAt ? ' · 会话绝对期限 ' + fmtTs(st.absoluteExpiresAt) : '';
-    var last = st.lastAttempt
-      ? (st.lastAttempt.ok ? '上次续期成功' : '上次续期失败（' + esc(st.lastAttempt.category || '?') + '）')
-      : '尚未续期';
-    var mode = st.renewMode || 'nas';
-    var modeLabel = mode === 'gui-companion' ? '桌面版跟随' : '自管续期';
+    var now = Date.now();
+    var exp = st.tokenExpiresAt || 0;
+    var days = exp ? (exp - now) / 86400000 : 0;
+    var state, tone;
+    if (!st.hasToken) { state = '未登录'; tone = '#e5484d'; }
+    else if (!exp || days <= 0) { state = '已过期'; tone = '#e5484d'; }
+    else if (days <= 3) { state = '即将到期'; tone = '#c58b00'; }
+    else { state = '有效'; tone = '#30a46c'; }
+    // PC 上 token 由桌面版刷新，反代只跟随、不换发（见 docs/nas-docker.md）
+    var guiMode = (st.renewMode || 'gui-companion') !== 'nas';
     $a('authSummary').innerHTML =
-      '凭据来源 <b>' + esc(st.source || 'none') + '</b> · generation <b>' + esc(st.generation == null ? 0 : st.generation) +
-      '</b> · ' + remain + abs + ' · ' + last +
+      '登录状态 <b style="color:' + tone + '">' + state + '</b>' +
+      (exp ? ' · 到期 <b>' + fmtTs(exp) + '</b>（剩 ' + (days > 0 ? days.toFixed(1) + ' 天' : '已过期') + '）' : '') +
+      '<br><span style="opacity:.72">凭据来源 ' + esc(st.source || 'none') +
       ' · 设备 <code>' + esc(st.deviceId || '—') + '</code>' +
-      (st.renewal && st.renewal.intervalMs ? ' · 续期间隔 ' + Math.round(st.renewal.intervalMs / 3600000) + 'h' : '') +
-      ' · 模式 <b title="' + esc(st.renewModeReason || '') + '">' + esc(modeLabel) + '</b>';
-    // gui-companion：换发由桌面版独占（双客户端都换发会互相挤掉会话 → 40115），
-    // 手动续期禁用；Cookie 对也不需要（不换发），隐藏导入框避免误导。
-    var guiMode = mode === 'gui-companion';
-    $a('authRenewBtn').disabled = guiMode;
-    $a('authRenewBtn').title = guiMode
-      ? '桌面版已接管换发，反代自动跟随其 token 更新。如需反代独占换发，设环境变量 TA_RENEW_MODE=nas 并重启'
-      : '实测：容器内换发会被服务端拒绝（40115 session not found），因为服务端只认官方桌面客户端的网络栈。'
-        + '点击不会损坏任何东西，但预期会失败；建议按 token 到期时间重新导入凭据。';
+      (guiMode ? ' · token 由桌面版刷新，反代自动跟随' : '') + '</span>';
     var banner = $a('authBanner');
-    if (st.needLogin) {
-      // 续期失败 ≠ token 失效：session_not_found 只说明换发会话找不到，
-      // 当前 access token 往往仍有效到 exp。分开说，别让人误以为整个凭据废了。
-      var stillValid = st.hasToken && st.tokenExpiresAt && st.tokenExpiresAt > Date.now();
-      banner.textContent = stillValid
-        ? '⚠ ' + st.needLogin + '。当前 token 仍有效至 ' + fmtTs(st.tokenExpiresAt) +
-          '，对话请求不受影响；到期后无法自动续期，届时需重新登录。'
-        : '⚠ ' + st.needLogin + '：点「登录账号」完成一次登录即可恢复';
+    if (!st.hasToken) {
+      banner.textContent = '尚未登录：点「登录账号」完成一次登录（也可以直接把 Cookie 粘到下面）。';
       banner.style.display = '';
-    } else if (st.tokenExpiresAt && st.tokenExpiresAt - Date.now() < 2 * 86400000 && !guiMode) {
-      // 容器内换发不可用 → token 到期就是硬截止，提前两天提醒
-      banner.textContent =
-        '⏳ token 将于 ' + fmtTs(st.tokenExpiresAt) +
-        ' 到期。容器内无法自动续期，请在此之前重新导入凭据（桌面版登录后导出，或粘贴 operationToken）。';
+      banner.style.background = 'rgba(229,72,77,.12)';
+      banner.style.color = '#e5484d';
+    } else if (exp && days <= 3) {
+      banner.textContent = days <= 0
+        ? '⚠ token 已于 ' + fmtTs(exp) + ' 过期，上游会拒绝请求。请在桌面版重新登录，或在此粘贴 Cookie 重新导入。'
+        : '⏳ token 将于 ' + fmtTs(exp) + ' 到期（剩 ' + days.toFixed(1) + ' 天）。到期前在桌面版重新登录一次即可，反代会自动跟随；不想开桌面版就粘贴一次 Cookie。';
       banner.style.display = '';
-    } else if (st.absoluteExpiresAt && st.absoluteExpiresAt - Date.now() < 7 * 86400000 && !guiMode) {
-      banner.textContent = '⚠ 会话将在 ' + fmtTs(st.absoluteExpiresAt) + ' 前后到期（会话绝对期限），届时需重新登录';
-      banner.style.display = '';
-    } else if (guiMode && st.absoluteExpiresAt && st.absoluteExpiresAt - Date.now() < 7 * 86400000) {
-      banner.textContent = '⚠ 会话将在 ' + fmtTs(st.absoluteExpiresAt) + ' 前后到期——届时在桌面版重新登录即可，反代会自动跟随';
-      banner.style.display = '';
+      banner.style.background = days <= 0 ? 'rgba(229,72,77,.12)' : 'rgba(197,139,0,.12)';
+      banner.style.color = days <= 0 ? '#e5484d' : '#c58b00';
     } else {
       banner.style.display = 'none';
     }
-    // 平台 Cookie 对（换发会话要素）状态 + 导入入口
+    // 平台 Cookie：只作为「换机/重登时可复用」的附加信息，不参与换取 token
     var pc = st.platformCookies || {};
-    var hasCookie = pc.operToken || pc.operationToken;
-    var row = $a('authCookieRow');
-    row.style.display = '';
     var names = [];
     if (pc.operToken) names.push('operToken');
     if (pc.operationToken) names.push('operationToken');
-    row.innerHTML = guiMode
-      ? '换发 Cookie：桌面版负责换发，反代不需要（仅 NAS 模式使用）'
-      : hasCookie
-        ? '换发 Cookie：<b>已就绪</b>（' + esc(names.join('、')) + '）——但换发能否成功取决于服务端是否认这个客户端，' +
-          '<b>容器内实测会被拒（40115）</b>，届时按 token 到期时间重新导入凭据即可'
-        : '换发 Cookie：<b style="color:#e5484d">缺失</b>——自动续期会报 40115 session_not_found，请在下方导入';
-    // Cookie 是登录主通道：无论 gui/nas 都常驻（gui 模式下它只用于登录，不用于换发）
+    var row = $a('authCookieRow');
+    row.style.display = '';
+    row.innerHTML = names.length
+      ? '平台 Cookie：<b>已保存</b>（' + esc(names.join('、')) + '）'
+      : '平台 Cookie：<b style="opacity:.7">未保存</b>（不影响对话）';
     $a('cookieImportBox').style.display = '';
   }
   function loadAuth() {
@@ -1217,18 +1192,6 @@ curl http://127.0.0.1:8787/v1/chat/completions \
     }).catch(function () { $a('cookieImportBtn').disabled = false; $a('cookieImportMsg').textContent = '导入请求失败'; });
   }
   $a('cookieImportBtn').addEventListener('click', function () { importCookie(false); });
-  $a('authRenewBtn').addEventListener('click', function () {
-    $a('authRenewBtn').disabled = true;
-    authApi('/admin/api/auth/renew', { method: 'POST' }).then(function (r) {
-      $a('authRenewBtn').disabled = false;
-      if (r.data && r.data.status === 'skipped' && r.data.message) {
-        var b = $a('authBanner');
-        b.textContent = 'ℹ ' + r.data.message;
-        b.style.display = '';
-      }
-      loadAuth();
-    }).catch(function () { $a('authRenewBtn').disabled = false; });
-  });
   // 退出登录：清空凭据 → 停机 → 回到待登录态。二次确认，避免误点把在跑的会话断掉。
   $a('authLogoutBtn').addEventListener('click', function () {
     if (!window.confirm('退出登录会清空本机凭据并停掉内核，需要重新登录才能恢复服务。确定继续？')) return;
